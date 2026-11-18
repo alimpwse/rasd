@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const browser=await chromium.launch({headless:true,args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream']});
+const context=await browser.newContext({viewport:{width:390,height:844},permissions:['camera'],serviceWorkers:'block'});
+const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+page.setDefaultTimeout(10000);
+try{
+ await page.goto(process.env.TEST_URL || 'http://127.0.0.1:4173');
+ await page.evaluate(async()=>{
+  const {saveNote}=await import('./storage.js');const c=document.createElement('canvas');c.width=800;c.height=600;const x=c.getContext('2d');x.fillStyle='#acb7ad';x.fillRect(0,0,800,600);x.fillStyle='#5c6970';x.fillRect(120,60,540,450);
+  const blob=await new Promise(r=>c.toBlob(r));
+  for(let i=0;i<3;i++)await saveNote({id:`report-${i}`,createdAt:`2026-11-${17-i}T10:15:00Z`,project:i===2?'Bayan Extension':'Salmiya Residence',category:'safety',description:i===0?'حماية فتحة السلم — يلزم تركيب حاجز':'Clear access to the inspection area',address:{area:'Salmiya',block:'5',street:'10'},location:{latitude:29.34,longitude:48.08,accuracy:10,timestamp:'2026-11-17T10:15:00Z'},photos:Array.from({length:i===0?2:1},(_,j)=>({id:`p-${j}`,original:blob,thumbnail:blob,annotations:[],crop:{ratio:'original'}}))});
+  window.sharedReports=[];Object.defineProperty(navigator,'canShare',{configurable:true,value:({files})=>files?.[0]?.type==='application/pdf'});Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{window.sharedReports.push({name:data.files[0].name,size:data.files[0].size,type:data.files[0].type,active:navigator.userActivation.isActive});}});
+ });
+ await page.locator('#nav-archive').click();await page.locator('.note-card').first().waitFor();
+ assert.equal(await page.locator('#library-filters').getAttribute('open'),null);
+ await page.locator('#library-select').click();assert.equal(await page.locator('.note-select').count(),3);
+ await page.locator('[data-note-id="report-0"] .note-open').click();assert.equal(await page.locator('#note-dialog').isVisible(),false);
+ assert.match(await page.locator('#selection-summary').textContent(),/1 note.*2 photos/);
+ await page.locator('#search').fill('Bayan');assert.match(await page.locator('#selection-hidden').textContent(),/1 selected outside/);
+ await page.locator('#select-visible').click();assert.match(await page.locator('#selection-summary').textContent(),/2 notes.*3 photos/);
+ await page.locator('#select-visible').click();assert.match(await page.locator('#selection-summary').textContent(),/1 note.*2 photos/);
+ await page.locator('#search').fill('');await page.locator('#select-visible').click();
+ await page.screenshot({path:'test-results/report-selection-mobile.png',fullPage:true});
+ await page.locator('#create-report').click();await page.locator('#report-dialog').waitFor({state:'visible'});
+ assert.equal(await page.locator('#report-notes li').count(),3);assert.match(await page.locator('#report-summary').textContent(),/3 notes.*4 photos/);
+ await page.locator('#report-title').fill('Weekly site observations');await page.locator('#report-order').selectOption('oldest');await page.locator('#report-location').uncheck();
+ await page.screenshot({path:'test-results/report-setup-mobile.png',fullPage:true});
+ await page.locator('#generate-report').click();await page.locator('#report-ready').waitFor({state:'visible',timeout:60000});
+ assert.equal(await page.locator('#report-pages img').count(),4);assert.equal(await page.locator('#report-setup').isVisible(),false);
+ await page.screenshot({path:'test-results/report-preview-mobile.png',fullPage:true});
+ await page.locator('#share-report').click();const shared=await page.evaluate(()=>sharedReports);assert.equal(shared.length,1);assert.equal(shared[0].active,true);assert.equal(shared[0].type,'application/pdf');assert.match(shared[0].name,/Weekly site observations.*\.pdf/);
+ const [download]=await Promise.all([page.waitForEvent('download'),page.locator('#save-report').click()]);assert.match(download.suggestedFilename(),/\.pdf$/);await download.saveAs('test-results/report-ui.pdf');
+ await page.locator('#edit-report').click();assert.equal(await page.locator('#report-ready').isVisible(),false);assert.equal(await page.locator('#report-title').inputValue(),'Weekly site observations');
+ await page.locator('#generate-report').click();await page.locator('#close-report').click();assert.equal(await page.locator('#report-dialog').isVisible(),false);await page.waitForTimeout(500);assert.equal(await page.locator('#report-ready').isVisible(),false);
+ await page.locator('#library-select').click();assert.equal(await page.locator('#selection-bar').isVisible(),false);
+ await page.locator('[data-note-id="report-0"] .note-open').click();await page.locator('#description').fill('Unsaved changes only');await page.locator('#close-note').click();await page.locator('#library-select').click();await page.locator('[data-note-id="report-0"] .note-open').click();await page.locator('#create-report').click();await page.locator('#report-draft-warning').waitFor({state:'visible'});
+ assert.match(await page.locator('#report-notes').textContent(),/حماية/);assert.doesNotMatch(await page.locator('#report-notes').textContent(),/Unsaved changes/);
+ await page.locator('#close-report').click();
+ const saved=await page.evaluate(async()=>(await (await import('./storage.js')).listNotes()).find(n=>n.id==='report-0'));assert.match(saved.description,/حماية/);assert.equal(saved.photos.length,2);
+ assert.deepEqual(errors,[]);console.log('PASS: note selection across filters, all results toggle, PDF setup/preview/download/share activation, cancel, saved-version draft warning, originals unchanged.');
+}finally{await browser.close();}

@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const browser=await chromium.launch({headless:true});
+const context=await browser.newContext({serviceWorkers:'block'});
+await context.route('**/draft-test.html',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Draft storage</title>'}));
+const page=await context.newPage();
+try {
+ await page.goto(`${process.env.TEST_URL || 'http://127.0.0.1:4173'}/draft-test.html`);
+ const result=await page.evaluate(async()=>{
+  const db=await import('./storage.js'),{DraftSession}=await import('./drafts.js');
+  const sample=id=>({id,createdAt:'2026-11-17T09:00:00Z',project:'Site',description:'Saved original',address:{area:'السالمية',block:'5',street:'12'},location:null,original:new Blob([new Uint8Array([0,255,128,10])],{type:'image/jpeg'}),thumbnail:new Blob(['thumb'],{type:'image/png'}),annotations:[{type:'text',x:.6,y:.4,color:'#ffffff',text:'تنظيف',scale:1.5}],category:'safety'});
+  const errorOf=async fn=>{try{await fn();return false;}catch{return true;}};
+  const original=sample('note');await db.saveNote(original);
+  const session=new DraftSession();
+  await Promise.all([session.persist({...original,description:'First edit'},true),session.persist({...original,description:'Latest edit'},true)]);
+  const envelope=(await db.listDrafts())[0];
+  const savedBefore=(await db.listNotes())[0].description;
+  const bytes=[...new Uint8Array(await envelope.record.original.arrayBuffer())];
+  const stale=new DraftSession(envelope),resumed=new DraftSession(envelope);
+  await resumed.persist({...envelope.record,description:'Resumed'},true);
+  const conflict=await errorOf(()=>stale.persist({...envelope.record,description:'Stale'},true));
+  const originalPut=IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put=function(...args){if(this.name==='notes')throw new DOMException('Full','QuotaExceededError');return originalPut.apply(this,args);};
+  const failedCommit=await errorOf(()=>resumed.commit({...original,description:'Must not commit'}));
+  IDBObjectStore.prototype.put=originalPut;
+  const afterFailure={saved:(await db.listNotes())[0].description,draft:(await db.listDrafts())[0].record.description};
+  await resumed.commit({...envelope.record,description:'Committed'});
+  const cleared=(await db.listDrafts()).length===0;
+  const staleAfterSave=await errorOf(()=>stale.persist({...original,description:'Resurrected'},true));
+  const fresh=new DraftSession();await fresh.persist(sample('new'),false);await fresh.discard('new');
+  const discarded=(await db.listDrafts()).length===0;
+  const deletion=new DraftSession();await deletion.persist(original,true);await db.deleteNote('note');
+  const staleAfterDelete=await errorOf(()=>deletion.persist(original,true));
+  const deletedCommit=await errorOf(()=>new DraftSession().commit(original,true));
+  const notResurrected=(await db.listNotes()).length===0;
+  const restoreDraft=new DraftSession();await restoreDraft.persist(sample('restore-draft'),false);
+  await db.replaceNotesWithJournal([],{});
+  const restoredClear=(await db.listDrafts()).length===0;
+  const pendingGate=await errorOf(()=>restoreDraft.persist(sample('restore-draft'),false));
+  return {latest:envelope.record.description,scale:envelope.record.annotations[0].scale,savedBefore,bytes,conflict,failedCommit,afterFailure,cleared,staleAfterSave,discarded,staleAfterDelete,deletedCommit,notResurrected,restoredClear,pendingGate};
+ });
+ assert.equal(result.latest,'Latest edit');assert.equal(result.scale,1.5);assert.equal(result.savedBefore,'Saved original');assert.deepEqual(result.bytes,[0,255,128,10]);
+ assert.equal(result.conflict,true);assert.equal(result.failedCommit,true);assert.deepEqual(result.afterFailure,{saved:'Saved original',draft:'Resumed'});
+ for(const key of ['cleared','staleAfterSave','discarded','staleAfterDelete','deletedCommit','notResurrected','restoredClear','pendingGate'])assert.equal(result[key],true,key);
+ console.log('PASS: ordered drafts, originals/annotation scale, saved-note isolation, optimistic conflicts, atomic failed/successful commit, discard/delete/restore cannot resurrect drafts.');
+} finally {await browser.close();}

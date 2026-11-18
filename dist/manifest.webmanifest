@@ -1,0 +1,27 @@
+{
+  "id": "./",
+  "name": "RASD \u2014 Field Notes",
+  "short_name": "RASD",
+  "description": "Capture, annotate and keep site notes on your device.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#10171b",
+  "theme_color": "#10171b",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

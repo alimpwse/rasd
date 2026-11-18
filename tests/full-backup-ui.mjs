@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const browser=await chromium.launch({headless:true,args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream']});
+const context=await browser.newContext({viewport:{width:390,height:844},permissions:['camera'],serviceWorkers:'block'});
+await context.route('https://photon.komoot.io/**',route=>route.abort());
+const page=await context.newPage();page.setDefaultTimeout(12000);
+try{
+ await page.goto(process.env.TEST_URL || 'http://127.0.0.1:4173');
+ await page.locator('#add-project').click();await page.locator('#project-name').fill('مشروع قادم');await page.locator('#project-form button[type=submit]').click();
+ await page.locator('#nav-settings').click();await page.locator('[data-theme-choice=light]').click();await page.locator('#stamp-date').uncheck();
+ await page.locator('#category-add').click();await page.locator('#category-name').fill('Unused category');await page.locator('#save-category').click();
+ const id=await page.locator('#default-category option').evaluateAll(options=>options.find(x=>x.textContent==='Unused category').value);await page.locator('#default-category').selectOption(id);
+ const downloading=page.waitForEvent('download');await page.locator('#settings-backup').click();const download=await downloading,backupPath='test-results/full-empty-backup.json';await download.saveAs(backupPath);
+ const bundle=JSON.parse(await readFile(backupPath,'utf8'));assert.equal(bundle.records.length,0);assert.equal(bundle.state.projects.active,'مشروع قادم');assert.equal(bundle.state.categories.defaultId,id);assert.equal(bundle.state.preferences.theme,'light');
+ await page.locator('[data-theme-choice=dark]').click();await page.locator('#default-category').selectOption('');
+ const invalid=structuredClone(bundle);invalid.state.projects.active='Missing';await page.locator('#restore-input').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(invalid))});
+ await page.locator('.inline-notice').filter({hasText:'Missing active backup project'}).waitFor();assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
+ await page.locator('#restore-input').setInputFiles(backupPath);await page.locator('#confirm-no').click();assert.equal(await page.locator('#default-category').inputValue(),'');
+ await page.locator('#restore-input').setInputFiles(backupPath);
+ await page.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='rasd-categories-v1')throw new DOMException('Blocked for test','SecurityError');return original.call(this,key,value);};});
+ await page.locator('#confirm-yes').click();await page.locator('#data-reload').waitFor();assert.equal(await page.locator('.app-shell').evaluate(el=>el.inert),true);
+ await Promise.all([page.waitForEvent('load'),page.locator('#data-reload').click()]);
+ assert.equal(await page.locator('html').getAttribute('data-theme'),'light');assert.equal(await page.locator('#active-project').inputValue(),'مشروع قادم');
+ await page.locator('#nav-settings').click();assert.equal(await page.locator('#default-category').inputValue(),id);assert.equal(await page.locator('#stamp-date').isChecked(),false);await page.locator('#close-settings').click();
+ const b64=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=800;c.height=600;return c.toDataURL().split(',')[1];});
+ await page.locator('#native-input').setInputFiles({name:'test.png',mimeType:'image/png',buffer:Buffer.from(b64,'base64')});await page.locator('#note-dialog').waitFor();
+ assert.equal(await page.locator('#project').inputValue(),'مشروع قادم');assert.equal(await page.locator('#category').inputValue(),id);await page.locator('#save-button').click();await page.getByText('Saved on this device.',{exact:true}).waitFor();
+ const saved=await page.evaluate(async()=>{const {listNotes}=await import('./storage.js');return (await listNotes())[0].stamp;});assert.equal(saved.date,false);assert.equal(saved.mode,'strip');
+ console.log('PASS: empty full-backup download, unused presets/defaults/theme, invalid and cancelled restore preservation, interrupted settings replay blocks UI and resumes on reload, restored defaults applied to next captured note.');
+}finally{await browser.close();}
