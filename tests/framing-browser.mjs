@@ -16,11 +16,11 @@ try {
    const pixels=x.createImageData(w,h);for(let i=0;i<pixels.data.length;i+=4){pixels.data[i]=(i/4)%251;pixels.data[i+1]=Math.floor(i/4/w)%253;pixels.data[i+2]=71;pixels.data[i+3]=255;}x.putImageData(pixels,0,0);
    const blob=await new Promise(r=>src.toBlob(r));const e=new PhotoEditor(document.createElement('canvas'),()=>{},()=>{});await e.load(blob);
    const base={createdAt:'2026-11-17T06:05:00Z',project:'Site',description:'Note',address:{},stamp:{...DEFAULT_STAMP,mode:'off'},crop:{ratio:'16:9'}};e.setRecord(base);
-   const exported=await createImageBitmap(await e.export()),frame=cropRect(w,h,base.crop),dest=document.createElement('canvas');dest.width=exported.width;dest.height=exported.height;const d=dest.getContext('2d');d.drawImage(exported,0,0);
+   const exported=await createImageBitmap(await e.export(Infinity,0.92,'image/png')),frame=cropRect(w,h,base.crop),dest=document.createElement('canvas');dest.width=exported.width;dest.height=exported.height;const d=dest.getContext('2d');d.drawImage(exported,0,0);
    const expected=x.getImageData(frame.x,frame.y,frame.width,frame.height).data,actual=d.getImageData(0,0,dest.width,dest.height).data;
    let equal=expected.length===actual.length;for(let i=0;equal && i<expected.length;i++)if(expected[i]!==actual[i])equal=false;
-   e.setRecord({...base,stamp:{...DEFAULT_STAMP,mode:'strip'}});const strip=await createImageBitmap(await e.export());
-   e.setRecord({...base,crop:{ratio:'original'}});const original=await createImageBitmap(await e.export());
+   e.setRecord({...base,stamp:{...DEFAULT_STAMP,mode:'strip'}});const strip=await createImageBitmap(await e.export(Infinity,0.92,'image/png'));
+   e.setRecord({...base,crop:{ratio:'original'}});const original=await createImageBitmap(await e.export(Infinity,0.92,'image/png'));
    sizes.push({width:exported.width,height:exported.height,equal,stripHeight:strip.height,original:[original.width,original.height]});
    exported.close();strip.close();original.close();e.clear();
   }
@@ -50,7 +50,7 @@ try {
  await page.locator('#tab-edit').click();await page.locator('#description').fill('ملاحظة للتصدير');await page.locator('#area').fill('Salmiya');await saved();
  const record=await page.evaluate(async()=>{const {listNotes}=await import('./storage.js');const r=(await listNotes())[0];return {crop:r.crop,export:r.export,bytes:Array.from(new Uint8Array(await r.original.arrayBuffer())),annotations:r.annotations};});assert.deepEqual(Buffer.from(record.bytes),bytes);assert.equal(record.crop.ratio,'16:9');assert.equal(record.export.fields.map,false);
  await page.evaluate(()=>{navigator.canShare=()=>true;navigator.share=async data=>{window.payload={text:data.text,active:navigator.userActivation.isActive,type:data.files[0].type};};Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>window.copied=text},configurable:true});});
- await page.locator('#share-button').click();const payload=await page.evaluate(()=>window.payload);assert.match(payload.text,/^ملاحظة للتصدير\n\d{1,2}:\d{2} [AP]M$/);assert.equal(payload.active,true);assert.equal(payload.type,'image/png');
+ await page.locator('#share-button').click();const payload=await page.evaluate(()=>window.payload);assert.match(payload.text,/^ملاحظة للتصدير\n\d{1,2}:\d{2} [AP]M$/);assert.equal(payload.active,true);assert.equal(payload.type,'image/jpeg');
  await page.locator('#note-settings').click();assert.equal(await page.locator('#message-preview').textContent(),payload.text);await page.locator('#message-time').uncheck();await page.locator('#message-note').uncheck();
  await page.screenshot({path:'test-results/share-fields-mobile.png'});
  await page.locator('#close-settings').click();await page.locator('#share-button').click();assert.equal((await page.evaluate(()=>window.payload)).text,payload.text,'defaults must not mutate open note');

@@ -1,4 +1,4 @@
-const CACHE='rasd-shell-v16';
+const CACHE='rasd-shell-v17';
 // The host redirects /index.html to /. Replaying that followed response for a
 // navigation (redirect mode "manual") is rejected by Safari and Chromium.
 const FILES=['./','./styles.css','./app.js','./report-ui.js','./report.js','./pdf.js','./camera.js','./video.js','./video-capture.js','./editor.js','./fonts.js','./backup.js','./fonts/IBMPlexSansArabic-Regular.woff2','./fonts/IBMPlexSansArabic-Medium.woff2','./fonts/IBMPlexSansArabic-SemiBold.woff2','./framing.js','./datetime.js','./model.js','./storage.js','./drafts.js','./phrases.js','./stamp.js','./projects.js','./library.js','./preferences.js','./categories.js','./address.js','./manifest.webmanifest','./icons/icon.svg','./icons/icon-192.png','./icons/icon-512.png'];

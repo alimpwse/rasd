@@ -14,6 +14,11 @@ export async function loadImage(blob) {
 }
 
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+const JPEG_TARGET_BYTES=8*1024*1024;
+function releaseImage(image) {
+  if(image instanceof HTMLCanvasElement)image.width=image.height=1;
+  else image?.close?.();
+}
 function textLayout(ctx,s,width,height) {
   const unit=Math.min(width,height),scale=s.scale??1,x=s.x*width,y=s.y*height;
   const size=Math.max(16,unit*.05)*scale,direction=textDirection(s.text);
@@ -78,16 +83,27 @@ export class PhotoEditor {
       this.editText(event);
     });
   }
-  async load(blob,annotations=[]) {
+  async load(blob,annotations=[],{sourceMaxSide=Infinity,renderPreview=true}={}) {
     await ensurePhotoFonts();
-    const image=await loadImage(blob);
+    let image=await loadImage(blob);
     const width=image.width || image.naturalWidth,height=image.height || image.naturalHeight;
     if(!width || !height || width*height>80000000) {image.close?.();throw new Error('Choose a photo smaller than 80 megapixels.');}
-    this.cancelGesture();this.image?.close?.();this.image=image;this.width=width;this.height=height;
+    const sourceScale=Math.min(1,sourceMaxSide/Math.max(width,height));
+    if(sourceScale<1){
+      const preview=document.createElement('canvas');
+      preview.width=Math.max(1,Math.round(width*sourceScale));
+      preview.height=Math.max(1,Math.round(height*sourceScale));
+      try{
+        const ctx=preview.getContext('2d');
+        if(!ctx)throw new Error('This device could not preview the photo.');
+        ctx.drawImage(image,0,0,preview.width,preview.height);
+      }finally{releaseImage(image);}
+      image=preview;
+    }
+    this.cancelGesture();releaseImage(this.image);this.image=image;this.width=width;this.height=height;
     this.annotations=structuredClone(annotations);this.history=[];this.selectedIndex=-1;this.tool='select';this.lastTextEdit=null;
-    const scale=Math.min(1,1600/Math.max(width,height));
-    this.canvas.width=Math.round(width*scale);this.canvas.height=Math.round(height*scale);
-    this.record=null;this.render();this.notifySelection();
+    this.record=null;
+    if(renderPreview)this.render();
   }
   point(event) {
     const box=this.canvas.getBoundingClientRect();
@@ -287,7 +303,10 @@ export class PhotoEditor {
     this.cancelGesture();this.previewStamp=view==='preview';this.editable=view==='markup';
     if(!this.editable)this.selectedIndex=-1;this.render();this.notifySelection();
   }
-  setRecord(record) {this.record=record;const error=this.render();if(error)throw error;}
+  setRecord(record,{renderPreview=true}={}) {
+    this.record=record;
+    if(renderPreview){const error=this.render();if(error)throw error;}
+  }
   frame() {return cropRect(this.width,this.height,this.record?.crop);}
   composition(canvas,maxSide=Infinity,pending=false,includeStamp=true) {
     const crop=this.frame(),scale=Math.min(1,maxSide/Math.max(crop.width,crop.height));
@@ -315,20 +334,37 @@ export class PhotoEditor {
     }
     this.drawSelection();this.notifySelection();return failure;
   }
-  async export(maxSide=Infinity,quality=0.8) {
+  async export(maxSide=Infinity,quality=0.92,type='image/jpeg') {
     if(!this.image) throw new Error('No photo to export.');
     await ensurePhotoFonts();
     const canvas=document.createElement('canvas');
     try {
       this.composition(canvas,maxSide,false,!Number.isFinite(maxSide));
-      const type=Number.isFinite(maxSide)?'image/jpeg':'image/png';
-      const blob=await new Promise(resolve=>canvas.toBlob(resolve,type,quality));
-      if(!blob)throw new Error('Full-resolution export failed. Download the original or try a shorter information strip.');
+      if(type==='image/jpeg'){
+        const ctx=canvas.getContext('2d');
+        ctx.globalCompositeOperation='destination-over';
+        ctx.fillStyle='#fff';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+      }
+      const encode=async level=>{
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,type,level));
+        if(blob?.type!==type)throw new Error('Photo export failed. Download the original or try a shorter information strip.');
+        return blob;
+      };
+      let blob=await encode(quality);
+      if(type==='image/jpeg' && !Number.isFinite(maxSide)){
+        // Start at high quality and keep all pixels even when the byte target is missed.
+        for(const level of [0.84,0.74]){
+          if(blob.size<=JPEG_TARGET_BYTES || level>=quality)continue;
+          const smaller=await encode(level);
+          if(smaller.size<blob.size)blob=smaller;
+        }
+      }
       return blob;
     } finally {canvas.width=1;canvas.height=1;}
   }
   clear() {
-    this.cancelGesture();this.image?.close?.();this.image=null;this.annotations=[];this.history=[];this.selectedIndex=-1;
+    releaseImage(this.image);this.image=null;this.cancelGesture();this.annotations=[];this.history=[];this.selectedIndex=-1;
     this.canvas.width=1;this.canvas.height=1;this.notifySelection();
   }
 }

@@ -5,7 +5,7 @@ Read this file before editing. It describes the existing product and its data co
 ## Product and owner preferences
 
 - RASD is a personal construction-site observation PWA, primarily used on iPhone in Kuwait. The owner communicates in Arabic; the application interface stays **English**, with Arabic/mixed-language note text and labels supported.
-- Camera-first capture, direct on-photo arrows/circles/text editing, combined markup/details, local drafts, multiple photos per note, project presets, editable categories and category-specific quick phrases, WhatsApp sharing, selected-note PDF reports, and full backup/restore already exist.
+- Camera-first capture, direct on-photo arrows/circles/text editing, combined markup/details, local drafts, multiple photos per note, project presets, editable categories and grouped quick phrases, WhatsApp sharing, selected-note PDF reports, and full backup/restore already exist.
 - The scope is recording observations. Do not add assignments, accounts, responsible-person invitations, resolution status, or before/after workflows unless explicitly requested.
 - Dark is the default; Light is available. Keep the existing restrained dark/gold design. Latin uses the system font; Arabic uses bundled IBM Plex Sans Arabic. Keep readable text and large touch controls.
 - The user wants direct editing on the photo and few unnecessary controls. Keep Save note, Save & Next and Share accessible on mobile.
@@ -49,9 +49,9 @@ Paths above without a prefix are in `dist/`. See `docs/TECHNICAL.md` for feature
 
 - The live preview is not the source of the full-quality saved photograph. The shutter invokes the native file-input camera from a user gesture. Preserve the exact supplied original Blob.
 - An iPhone web app cannot force the native camera picker to offer 16:9 or guarantee Apple Camera HDR/ProRAW/48 MP. Users can capture 16:9 in Apple Camera and import. Never silently crop new images; optional crop remains explicit and reversible.
-- Exports use full decoded-resolution PNG within the selected crop; the information strip appends height without shrinking the photo. Only thumbnails may be resized/lossy. Preserve original-download byte equality.
+- Edited-photo exports use JPEG at full decoded dimensions within the selected crop. Start at quality 0.92 and retry at 0.84 and 0.74 when needed to aim for 8 MiB without resizing. The strip adds height. Preserve original-download byte equality.
 - A note has 1–10 ordered photo/video attachments in the legacy-named `photos` array. Photo shapes are unchanged. Video shapes have `kind: "video"`, duration/width/height, original video Blob, image thumbnail, empty annotations and original crop. Use `isVideo`/`mediaExtension` helpers; never pass video originals to PhotoEditor/loadImage. Photos retain independent markup/crop. Description, category, project, location and stamp/export settings are shared. Limits: 25 MiB and 80 MP per source image, videos up to 60 seconds / 50 MiB, 100 MiB originals per note; canvas memory may impose a lower practical limit.
-- Prepare share files before the user taps Share so `navigator.share` retains user activation. Support explicit fallbacks; never silently share only one photo from a multi-photo note. WhatsApp may ignore captions or recompress photos; downloading and sending as a document is the unchanged-file fallback.
+- For multi-attachment notes encode only when requested, one attachment at a time, and use the confirmation tap for `navigator.share`. Saving drafts and notes never waits for full-size exports. Retain only a bounded editing preview and decode originals for the export. Support explicit fallbacks; never silently share only one photo from a multi-photo note. WhatsApp may ignore captions or recompress photos; downloading and sending as a document is the unchanged-file fallback.
 - Save & Next advances only after a successful durable save of the latest revision, including late GPS/address changes. It returns to the camera; the next native capture still needs a tap. It carries project/category only, with fresh date/GPS, blank description/address and no copied annotations.
 - Round context is session-only. Camera cancellation retains it; successful acquisition consumes it; End round/reload clears it. Failed saves, conflicting drafts and pending restores keep the current editor available.
 - PDF reports use saved versions: up to 20 notes / 50 attachments / 100 MiB. Videos appear as labeled still previews; the actual video file is shared separately. Full-resolution cropped photos are losslessly embedded; Arabic text is rasterized consistently, not selectable PDF text. Cancellation and stale-generation guards must stay intact.
@@ -66,7 +66,7 @@ Pointer cancellation discards the current recording only when its pointer ID mat
 
 MP4 is preferred if MediaRecorder supports it, with supported WebM fallback. Imported MP4/MOV/WebM must actually decode. MediaRecorder WebM may report Infinity until the browser seeks through the timeline; `inspectVideo` measures actual duration rather than inventing it. Enforce dimensions/size/time caps, timeout cleanly and release object URLs/tracks. Preserve the supplied/recorded video Blob; do not burn stamps or recompress it. Use an unparameterized video MIME for Web Share files while keeping bytes unchanged. Actual iPhone camera quality, codec support and WhatsApp delivery require device acceptance.
 
-## Current appearance and defaults (0.14.0)
+## Current appearance and defaults (0.15.0)
 
 New preferences use **Dark** and **Information strip**. Printed fields: location/date/time on; project/category/note off. Printed address: block/street on, area off. Coordinates remain stored but never print on the photo.
 
@@ -78,7 +78,7 @@ These defaults belong to the `Preferences` constructor. **Do not change legacy f
 - Dates use `DD/MM/YYYY`; time uses `h:mm AM/PM`, no KWT, in Asia/Kuwait. Visible metadata label is Date & time. Imported-photo time is when added, not a claim about EXIF capture time.
 - The strip adapts to portrait/landscape. The optional on-photo layout uses a soft black gradient. UI theme must not recolor exported photographs.
 
-Current quick phrases (punctuation included):
+The picker shows all phrase groups and sets the note category to the selected phrase’s category. Current presets:
 
 | Category / stable ID | Phrases |
 | --- | --- |
@@ -100,7 +100,7 @@ Keep accuracy/distance checks, request throttling and cache behavior in `address
 
 - `.github/workflows/pages.yml` publishes **only `dist`**, triggered on `main` or manually. Enable Settings → Pages → Source: GitHub Actions. No install/build or secret token is required for this workflow.
 - Keep asset/import URLs relative. Project sites may live at `/repository/`, not the domain root. Manifest `id`, `start_url`, `scope`, and service-worker registration use `./`.
-- Service worker shell cache is currently `rasd-shell-v16`. Cache the canonical directory URL `./`, not a redirected `/index.html`. Precache uses `redirect: 'error'`; returning a followed redirect for a navigation previously broke Safari.
+- Service worker shell cache is currently `rasd-shell-v17`. Cache the canonical directory URL `./`, not a redirected `/index.html`. Precache uses `redirect: 'error'`; returning a followed redirect for a navigation previously broke Safari.
 - On every shipped app-asset change, increment the shell cache version and update the app version in `package.json` and visible version strings in `index.html`. Add new required offline assets to `FILES` in `sw.js`. A docs-only change does not need an app version bump.
 - Keep explicit Update acceptance for normal upgrades. Do not unconditionally skip waiting, reload an unsaved editor or wipe user storage. The limited auto-recovery for historical caches v1/v2 is intentional.
 - Avoid hosting separate independent RASD copies under one `username.github.io` origin: IndexedDB/localStorage keys and cache names are shared by origin, even across different paths. Use one canonical installation per origin or intentionally design a migration/namespacing strategy.
@@ -130,6 +130,6 @@ Run the HTTP server in another terminal while browser tests execute. Tests accep
 
 Before a meaningful logic change, reproduce the relevant failure; then run the matching tests. For storage, backup, defaults, capture, sharing or service-worker changes, run the full unit/browser suites. Check portrait/landscape, Arabic, offline launch, reload persistence and error paths as relevant. If a new default invalidates a fixture that intended to enable a feature, enable that option explicitly rather than weakening its assertion.
 
-The 0.14.0 release passed 118 Node tests and 35 Chromium browser scripts, plus the video integration scenario under a `/rasd/` project path. The video suites cover capture races, decoding, mixed notes, original bytes, removal, restored metadata and old-writer blocking. The export verification record is in `VERIFY.md`. Automated Chromium tests do not prove real Safari camera quality, iOS termination behavior or WhatsApp delivery. Report untested behavior accurately.
+See the current release’s test results in `VERIFY.md`. The video suites cover capture races, decoding, mixed notes, original bytes, removal, restored metadata and old-writer blocking. The export verification record is in `VERIFY.md`. Automated Chromium tests do not prove real Safari camera quality, iOS termination behavior or WhatsApp delivery. Report untested behavior accurately.
 
 When handing changes back, state what changed, what ran and any material limitation. Do not invent successful deployments or physical-device results. Keep README/this guide accurate, retain the font license, and do not add a code license on the owner's behalf.

@@ -34,8 +34,8 @@ try{
  await page.locator('[data-tool=arrow]').click();const canvas=await page.locator('#edit-canvas').boundingBox();await page.mouse.move(canvas.x+30,canvas.y+30);await page.mouse.down();await page.mouse.move(canvas.x+100,canvas.y+90);await page.mouse.up();
  await page.locator('.photo-thumbnail').nth(0).click();await page.locator('#note-video').waitFor();assert.equal(await page.locator('#note-video').isVisible(),true);
  await page.locator('#save-button').click();await page.getByText('Saved on this device.',{exact:true}).waitFor();
- await page.waitForFunction(()=>!document.querySelector('#share-button').disabled);await page.locator('#share-button').click();await page.waitForFunction(()=>window.lastShare?.files.length===2);
- shared=await page.evaluate(()=>window.lastShare);assert.deepEqual(shared.files.map(x=>x.type),['video/webm','image/png']);assert.deepEqual(shared.files[0].bytes,fixture.bytes);
+ await page.waitForFunction(()=>!document.querySelector('#share-button').disabled);await page.locator('#share-button').click();await page.locator('#confirm-export').click();await page.waitForFunction(()=>window.lastShare?.files.length===2);
+ shared=await page.evaluate(()=>window.lastShare);assert.deepEqual(shared.files.map(x=>x.type),['video/webm','image/jpeg']);assert.deepEqual(shared.files[0].bytes,fixture.bytes);
  await page.locator('#close-note').click();await page.reload();await page.locator('#nav-archive').click();await page.locator('.note-card').click();await page.locator('#note-dialog').waitFor();
  assert.equal(await page.locator('#note-video').isVisible(),true);
  const stored=await page.evaluate(async()=>{const {listNotes}=await import('./storage.js');const n=(await listNotes())[0];return {video:Array.from(new Uint8Array(await n.photos[0].original.arrayBuffer())),annotation:n.photos[1].annotations.length};});

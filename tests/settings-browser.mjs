@@ -31,7 +31,7 @@ try {
  await page.locator('#category').selectOption('safety');await page.locator('#description').fill('فحص سلامة الموقع');await saved();
  const first=(await notes())[0];assert.equal(first.category,'safety');assert.equal(first.stamp.mode,'overlay');assert.equal(first.stamp.time,false);assert.equal(first.export.includeText,false);
  await page.evaluate(()=>{navigator.canShare=()=>true;navigator.share=async data=>{window.sharedPayload={text:data.text,fileType:data.files[0].type,active:navigator.userActivation.isActive};};});
- await page.locator('#share-button').click();assert.deepEqual(await page.evaluate(()=>window.sharedPayload),{text:undefined,fileType:'image/png',active:true});
+ await page.locator('#share-button').click();assert.deepEqual(await page.evaluate(()=>window.sharedPayload),{text:undefined,fileType:'image/jpeg',active:true});
  await page.screenshot({path:'test-results/address-category-mobile.png'});
  await page.locator('#note-settings').click();await page.locator('#stamp-mode').selectOption('strip');await page.locator('#share-include-text').check();
  await page.locator('#close-settings').click();await saved();assert.equal((await notes())[0].stamp.mode,'overlay','changing defaults must not alter current photo');

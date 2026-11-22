@@ -15,17 +15,28 @@ try {
   const editor=new PhotoEditor(document.createElement('canvas'),()=>{},()=>{});await editor.load(original);
   const base={createdAt:'2026-11-17T09:00:00Z',project:'Project A',description:'ملاحظة عربية مع A-12',address:{area:'السالمية',block:'5',street:'10'},location:{latitude:29.333,longitude:48.083},stamp:{mode:'off',date:true,time:true,location:true,note:true,project:true}};
   const inspect=async(blob)=>{
-   const img=await createImageBitmap(blob),c=document.createElement('canvas');c.width=1;c.height=1;const x=c.getContext('2d');x.drawImage(img,0,0);const pixel=[...x.getImageData(0,0,1,1).data];const size={width:img.width,height:img.height,type:blob.type,pixel};img.close();return size;
+   const img=await createImageBitmap(blob),c=document.createElement('canvas');c.width=1;c.height=1;const x=c.getContext('2d');x.drawImage(img,0,0);const pixel=[...x.getImageData(0,0,1,1).data];const size={width:img.width,height:img.height,type:blob.type,pixel,bytes:blob.size};img.close();return size;
   };
   editor.setRecord(base);const plain=await inspect(await editor.export());
   editor.setRecord({...base,stamp:{...base.stamp,mode:'strip'}});const strip=await inspect(await editor.export());
   editor.setRecord({...base,stamp:{...base.stamp,mode:'overlay'}});const overlay=await inspect(await editor.export());
+  editor.setRecord(base);
+  const pixels=ctx.createImageData(src.width,src.height);
+  let seed=123;
+  for(let i=0;i<pixels.data.length;i+=4){seed=(Math.imul(seed,1664525)+1013904223)>>>0;pixels.data[i]=seed>>>24;pixels.data[i+1]=(seed>>>16)&255;pixels.data[i+2]=(seed>>>8)&255;pixels.data[i+3]=255;}
+  ctx.putImageData(pixels,0,0);
+  const textured=await new Promise(r=>src.toBlob(r,'image/png'));src.width=src.height=1;
+  await editor.load(textured,[],{renderPreview:false});
+  editor.setRecord(base,{renderPreview:false});
+  const compact=await inspect(await editor.export());
   let overlong=false;try{editor.setRecord({...base,description:'long note '.repeat(400),stamp:{...base.stamp,mode:'overlay'}});}catch{overlong=true;}
   editor.render();const thumb=await editor.export(320,.8);editor.clear();
-  return {plain,strip,overlay,overlong,thumbnailSize:thumb.size};
+  return {plain,strip,overlay,compact,pngBytes:textured.size,overlong,thumbnailSize:thumb.size};
  });
- assert.deepEqual(result.plain,{width:4032,height:3024,type:'image/png',pixel:[100,120,140,255]});
- assert.equal(result.strip.width,4032);assert.ok(result.strip.height>3024);assert.deepEqual(result.strip.pixel,[100,120,140,255]);
+ assert.equal(result.plain.width,4032);assert.equal(result.plain.height,3024);assert.equal(result.plain.type,'image/jpeg');
+ assert.equal(result.compact.width,4032);assert.equal(result.compact.height,3024);assert.ok(result.compact.bytes<result.pngBytes/2);
+ console.log('Textured 12 MP fixture: PNG',result.pngBytes,'bytes, JPEG',result.compact.bytes,'bytes');
+ assert.equal(result.strip.width,4032);assert.ok(result.strip.height>3024);assert.ok(result.strip.pixel.every((value,i)=>Math.abs(value-[100,120,140,255][i])<=3));
  assert.equal(result.overlay.width,4032);assert.equal(result.overlay.height,3024);assert.ok(result.overlong);assert.ok(result.thumbnailSize>0);
  const input=Buffer.from(await page.evaluate(async()=>Array.from(new Uint8Array(await window.fixture.arrayBuffer()))));
  await page.locator('#add-project').click();await page.locator('#project-name').fill('مشروع A');await page.getByRole('button',{name:'Create project',exact:true}).click();
@@ -60,5 +71,5 @@ try {
  await page.locator('#note-settings').click();assert.equal(await page.locator('#download-original').isDisabled(),false);await page.locator('#close-settings').click();
  await page.locator('#close-note').click();await page.reload();assert.equal(await page.locator('#active-project').inputValue(),'Site B');
  assert.deepEqual(errors,[]);
- console.log('PASS: 4032x3024 pixels and colors unchanged, PNG strip adds height, overlay retains dimensions, original bytes identical, projects remembered, no reused address, stamp persistence, Arabic, 375px/landscape/tablet layout, oversized overlay can save original.');
+ console.log('PASS: 4032x3024 pixels preserved, compact JPEG strip adds height, overlay retains dimensions, original bytes identical, projects remembered, no reused address, stamp persistence, Arabic, 375px/landscape/tablet layout, oversized overlay can save original.');
 } finally {await browser.close();}

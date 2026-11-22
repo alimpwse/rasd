@@ -51,7 +51,7 @@ try {
   });
   await page.getByRole('button',{name:'Share',exact:true}).click();
   const shared=await page.evaluate(()=>window.lastShare);
-  assert.ok(shared.active);assert.equal(shared.type,'image/png');assert.ok(shared.text.includes('شرخ بجانب النافذة'));
+  assert.ok(shared.active);assert.equal(shared.type,'image/jpeg');assert.ok(shared.text.includes('شرخ بجانب النافذة'));
   assert.ok(shared.text.includes('q=29.333%2C48.083'));
   await page.getByRole('button',{name:'Close note',exact:true}).click();
   await page.locator('#nav-archive').click();

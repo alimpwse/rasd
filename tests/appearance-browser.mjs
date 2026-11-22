@@ -32,13 +32,13 @@ try{
   const exports=[];
   for(const [width,height] of [[1600,900],[900,1600]]){
    const src=document.createElement('canvas');src.width=width;src.height=height;const c=src.getContext('2d');c.fillStyle='#9b9d91';c.fillRect(0,0,width,height);
-   // Exact source pixels on both edges are a regression guard against auto-cropping.
+   // The lossless composition probe verifies exact edge pixels and strip color.
    c.fillStyle='#e23b30';c.fillRect(0,0,4,height);c.fillStyle='#2a80cf';c.fillRect(width-4,0,4,height);
    const original=await new Promise(r=>src.toBlob(r));const editor=new PhotoEditor(document.createElement('canvas'),()=>{},()=>{});await editor.load(original);
    const record={createdAt:'2026-11-17T10:05:00Z',project:'مشروع السالمية',description:'إزالة المخلفات من ممر المشاة وإبقاء المدخل خالياً',category:'housekeeping',address:{area:'السالمية',block:'5',street:'10'},location:{latitude:29.333,longitude:48.083},stamp:{...DEFAULT_STAMP}};
-   editor.setRecord(record);const blob=await editor.export(),bitmap=await createImageBitmap(blob);const out=document.createElement('canvas');out.width=bitmap.width;out.height=bitmap.height;const x=out.getContext('2d');x.drawImage(bitmap,0,0);
+   editor.setRecord(record);const blob=await editor.export(Infinity,0.92,'image/png'),bitmap=await createImageBitmap(blob);const out=document.createElement('canvas');out.width=bitmap.width;out.height=bitmap.height;const x=out.getContext('2d');x.drawImage(bitmap,0,0);
    exports.push({width:bitmap.width,height:bitmap.height,sourceHeight:height,left:[...x.getImageData(0,height-1,1,1).data],right:[...x.getImageData(width-1,height-1,1,1).data],paper:[...x.getImageData(0,height,1,1).data],data:out.toDataURL()});
-   const before=await blob.arrayBuffer();document.documentElement.dataset.theme='dark';const after=await(await editor.export()).arrayBuffer();exports.at(-1).sameThemeBytes=before.byteLength===after.byteLength && new Uint8Array(before).every((v,i)=>v===new Uint8Array(after)[i]);bitmap.close();editor.clear();
+   const before=await blob.arrayBuffer();document.documentElement.dataset.theme='dark';const after=await(await editor.export(Infinity,0.92,'image/png')).arrayBuffer();exports.at(-1).sameThemeBytes=before.byteLength===after.byteLength && new Uint8Array(before).every((v,i)=>v===new Uint8Array(after)[i]);bitmap.close();editor.clear();
   }
   CanvasRenderingContext2D.prototype.fillText=native;
   return {fonts,exports,text};

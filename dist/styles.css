@@ -168,3 +168,5 @@
 .shutter.is-recording{border-color:#ff5b55;transform:scale(1.07)}.shutter.is-recording>span{background:#ff5b55;border-radius:14px;transform:scale(.68)}
 .native-video-button{display:block;margin:0 auto;padding:8px 14px;min-height:44px;background:transparent;color:var(--steel);font-size:12px;text-decoration:underline;text-underline-offset:3px}
 .photo-thumbnail span{max-width:100%;white-space:nowrap}
+
+.phrase-choices h3{margin:12px 0 2px;font-size:14px;color:var(--steel)}

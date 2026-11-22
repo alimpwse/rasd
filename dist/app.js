@@ -19,10 +19,10 @@ import {AddressLookup} from './address.js';
 
 const $=id=>document.getElementById(id);
 let activeScreen='camera', draft=null, dirty=false, saved=false, notes=[], thumbnails=[];
-let prepared=null, exportGeneration=0, prepareTimer, preparePromise=Promise.resolve(), resolvePrepare, locationGeneration=0;
+let prepared=null, exportGeneration=0, exportRequest=0, prepareTimer, locationGeneration=0;
 let busy=false,picking=false,loadingPhoto=false,openingNote=false,revision=0,offlineReady=false,toastTimer;
 let draftSession=null,draftTimer,lastDraftRevision=-1,recoverableDrafts=[],draftThumbnails=[],draftListGeneration=0;
-let activePhotoIndex=0,photoURLs=[],photoCache=new Map(),renderQueue=Promise.resolve(),textEditing=false,textPoint=null,editingPhraseId='';
+let activePhotoIndex=0,photoURLs=[],renderQueue=Promise.resolve(),textEditing=false,textPoint=null,editingPhraseId='';
 let nextCapture=null;
 let videoCapture=null,videoState='idle',videoURLs=[];
 const fields=['description','project','area','block','street','category'];
@@ -178,13 +178,15 @@ function clearVideoPreview(){
   videoURLs.forEach(URL.revokeObjectURL);videoURLs=[];
 }
 async function loadAttachment(item){
+  cancelPhotoPreparation();
+  await renderQueue;
   clearVideoPreview();
   if(isVideo(item)){
     editor.clear();const player=$('note-video');
     const src=URL.createObjectURL(item.original),poster=URL.createObjectURL(item.thumbnail);videoURLs=[src,poster];
     player.src=src;player.poster=poster;player.hidden=false;$('edit-canvas').hidden=true;
     player.onerror=()=>{if(player.getAttribute('src')===src)notify('This browser could not play this video. Save the original to open it in another app.',true);};
-  }else{ $('edit-canvas').hidden=false;await editor.load(item.original,item.annotations); }
+  }else{ $('edit-canvas').hidden=false;await editor.load(item.original,item.annotations,{sourceMaxSide:1600}); }
 }
 function photoRecord(record,photo){return {...record,...photo,id:record.id,photos:undefined};}
 function renderPhotoRail(){
@@ -216,24 +218,30 @@ async function appendPhotos(files){
   hidePhotoText();editor.cancelGesture();draft=readDraft();setBusy(true);
   const temporary=new PhotoEditor(document.createElement('canvas'),()=>{},()=>'');
   try{
+    cancelPhotoPreparation();
+    await renderQueue;
     const added=[];
     for(const original of files){
       if(original.type.startsWith('video/'))added.push(await prepareVideo(original));
-      else{await temporary.load(original);added.push({id:crypto.randomUUID(),original,thumbnail:await temporary.export(320,.8),annotations:[],crop:{ratio:'original'}});}
+      else{
+        await temporary.load(original,[],{sourceMaxSide:320,renderPreview:false});
+        try{added.push({id:crypto.randomUUID(),original,thumbnail:await temporary.export(320,.8),annotations:[],crop:{ratio:'original'}});}
+        finally{temporary.clear();}
+      }
     }
     if($('data-status-dialog').open)return;
     const last=added.at(-1);await loadAttachment(last);
-    draft.photos.push(...added);activePhotoIndex=draft.photos.length-1;selectEditorView('edit');syncPhotoRatio();renderPhotoRail();markDirty();queuePrepare();
-  }finally{temporary.clear();setBusy(false);}
+    draft.photos.push(...added);activePhotoIndex=draft.photos.length-1;selectEditorView('edit');syncPhotoRatio();renderPhotoRail();markDirty();
+  }finally{temporary.clear();setBusy(false);queuePrepare();}
 }
 async function removeCurrentPhoto(){
   const type=isVideo(currentPhoto())?'video':'photo';
   if(busy || !draft || draft.photos.length<2 || !await confirmAction(`Remove this ${type}?`,'The other attachments and shared note will stay.',`Remove ${type}`))return;
   hidePhotoText();editor.cancelGesture();draft=readDraft();setBusy(true);
   try{
-    const removed=currentPhoto(),remaining=draft.photos.filter((_,i)=>i!==activePhotoIndex),index=Math.min(activePhotoIndex,remaining.length-1);
+    const remaining=draft.photos.filter((_,i)=>i!==activePhotoIndex),index=Math.min(activePhotoIndex,remaining.length-1);
     await loadAttachment(remaining[index]);
-    draft.photos=remaining;activePhotoIndex=index;photoCache.delete(removed.id);selectEditorView(editorView);syncPhotoRatio();renderPhotoRail();markDirty();queuePrepare();
+    draft.photos=remaining;activePhotoIndex=index;selectEditorView(editorView);syncPhotoRatio();renderPhotoRail();markDirty();queuePrepare();
   }finally{setBusy(false);}
 }
 function resolveCategory(record) {
@@ -288,7 +296,7 @@ function syncPhotoRatio() {
   $('photo-ratio').value=currentPhoto().crop.ratio;
   $('photo-mode').textContent=video?`${currentPhoto().width} × ${currentPhoto().height} · Original video`:
     currentPhoto().crop.ratio==='original'?`${editor.width} × ${editor.height} · Original retained`:`${editor.width>=editor.height?'16:9':'9:16'} crop · Original retained`;
-  $('download-photo').textContent=video?'Save video':'Save full-size PNG';$('share-photo').textContent=video?'Share current video':'Share current photo';
+  $('download-photo').textContent=video?'Save video':'Save full-size JPEG';$('share-photo').textContent=video?'Share current video':'Share current photo';
   $('original-info').hidden=video;
   $('photo-settings-summary').textContent=photoSettingsSummary();
 }
@@ -365,54 +373,60 @@ function setBusy(value) {
   if(!value){setShareButtons();if(draft){$('add-photo').disabled=draft.photos.length>=MAX_NOTE_PHOTOS;}if(dirty && revision!==lastDraftRevision)scheduleDraft();}
 }
 function setShareButtons() {
-  for(const id of ['share-button','share-photo','download-photo']) $(id).disabled=busy || !prepared;
+  const disabled=busy || !draft || (!prepared && draft.photos.length===1);
+  for(const id of ['share-button','share-photo','download-photo']) $(id).disabled=disabled;
+}
+function cancelPhotoPreparation(){
+  prepared=null;
+  clearTimeout(prepareTimer);
+  return ++exportGeneration;
+}
+async function prepareFiles(record,indices,isCurrent,onProgress=()=>{}){
+  const files=[];
+  const renderer=new PhotoEditor(document.createElement('canvas'),()=>{},()=>'');
+  for(const index of indices){
+    if(!isCurrent())return;
+    const photo=record.photos[index];
+    let blob=photo.original;
+    if(!isVideo(photo)){
+      try{
+        await renderer.load(photo.original,photo.annotations,{renderPreview:false});
+        if(!isCurrent())return;
+        renderer.setRecord(photoRecord(record,photo),{renderPreview:false});
+        blob=await renderer.export();
+      }finally{renderer.clear();}
+    }
+    if(!isCurrent())return;
+    const suffix=record.photos.length>1?`-${index+1}` : '';
+    files.push(new File([blob],`rasd-${record.id}${suffix}.${mediaExtension(blob)}`,{type:blob.type.split(';')[0]}));
+    onProgress(files.length);
+    if(files.length<indices.length)await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  return files;
 }
 function queuePrepare() {
   if(!draft)return;
-  prepared=null;setShareButtons();clearTimeout(prepareTimer);resolvePrepare?.();
-  const generation=++exportGeneration,record=readDraft();
-  try{if(!isVideo(record.photos[activePhotoIndex]))editor.setRecord(photoRecord(record,record.photos[activePhotoIndex]));$('export-status').textContent=record.photos.some(isVideo)?'Preparing original videos and photos…':record.photos.length>1?`Preparing ${record.photos.length} full-resolution photos…`:'Preparing full-resolution PNG…';}
-  catch(error){$('export-status').textContent=error.message;}
-  preparePromise=new Promise(resolve=>{
-    resolvePrepare=resolve;
-    prepareTimer=setTimeout(()=>{
-      renderQueue=renderQueue.catch(()=>{}).then(async()=>{
-        if(generation!==exportGeneration || !draft)return;
-        const renderer=new PhotoEditor(document.createElement('canvas'),()=>{},()=>'');
-        try{
-          const items=[];
-          for(const [index,photo] of record.photos.entries()){
-            if(generation!==exportGeneration || !draft)return;
-            const info=photoRecord(record,photo),key=JSON.stringify({...info,original:undefined,thumbnail:undefined});
-            let result=photoCache.get(photo.id);
-            if(isVideo(photo))result={id:photo.id,original:photo.original,key,thumbnail:photo.thumbnail,blob:photo.original};
-            else if(!result || result.original!==photo.original || result.key!==key){
-              await renderer.load(photo.original,photo.annotations);renderer.setRecord(info);
-              const thumbnail=await renderer.export(320,.8),blob=await renderer.export();
-              result={id:photo.id,original:photo.original,key,thumbnail,blob};
-              renderer.clear();
-            }
-            if(generation!==exportGeneration || !draft)return;
-            photoCache.set(photo.id,result);
-            const target=draft.photos.find(p=>p.id===photo.id);if(target)target.thumbnail=result.thumbnail;
-            const suffix=record.photos.length>1?`-${index+1}`:'';
-            items.push({...result,file:new File([result.blob],`rasd-${record.id}${suffix}.${mediaExtension(result.blob)}`,{type:result.blob.type.split(';')[0]})});
-          }
-          if(generation!==exportGeneration || !draft)return;
-          const active=items[activePhotoIndex];prepared={items,files:items.map(p=>p.file),blob:active.blob,file:active.file};
-          const frame=isVideo(currentPhoto())?currentPhoto():editor.frame();$('export-status').textContent=record.photos.some(isVideo)?`${attachmentSummary(record.photos)} · Original video · ${(items.reduce((n,p)=>n+p.blob.size,0)/1024/1024).toFixed(1)} MB`:
-            `${items.length>1?`${items.length} photos · `:''}${frame.width} × ${frame.height} · PNG · ${(items.reduce((n,p)=>n+p.blob.size,0)/1024/1024).toFixed(1)} MB`;
-          setShareButtons();
-        }catch(error){if(generation===exportGeneration){$('export-status').textContent=error.message;report(error);}}
-        finally{renderer.clear();}
-      }).finally(resolve);
-    },400);
-  });
-}
-async function readyImage() {
-  let generation;
-  do {generation=exportGeneration;await preparePromise;} while(generation!==exportGeneration);
-  if(!draft?.photos.every(photo=>photo.thumbnail)) throw new Error('The photo is still preparing. Try again shortly.');
+  const generation=cancelPhotoPreparation(),record=readDraft(),photo=record.photos[activePhotoIndex];
+  const status=$('export-status');
+  setShareButtons();
+  try{if(!isVideo(photo))editor.setRecord(photoRecord(record,photo));}
+  catch(error){status.textContent=error.message;return;}
+  if(record.photos.length>1){status.textContent='Files are prepared when you share or export.';return;}
+  status.textContent=isVideo(photo)?'Preparing original video…':'Preparing full-size JPEG…';
+  const isCurrent=()=>generation===exportGeneration && !!draft && !$('data-status-dialog').open;
+  prepareTimer=setTimeout(()=>{
+    renderQueue=renderQueue.then(async()=>{
+      if(!isCurrent())return;
+      try{
+        const files=await prepareFiles(record,[0],isCurrent);
+        if(!files || !isCurrent())return;
+        [prepared]=files;
+        const frame=isVideo(photo)?photo:editor.frame();
+        status.textContent=`${frame.width} × ${frame.height} · ${isVideo(photo)?'Original video':'JPEG'} · ${(prepared.size/1024/1024).toFixed(1)} MB`;
+        setShareButtons();
+      }catch(error){if(isCurrent()){status.textContent=error.message;report(error);}}
+    });
+  },400);
 }
 function showLocation(message) {
   const location=draft?.location;
@@ -480,7 +494,7 @@ async function openNote(record,isSaved,mode='',recovery=null) {
   if($('data-status-dialog').open){editor.clear();clearVideoPreview();return;}
   record={...record,photos:photosOf(record),original:first.original,thumbnail:first.thumbnail,annotations:first.annotations,crop:first.crop};record.photos[0]=first;
   camera.stop();
-  activePhotoIndex=0;photoCache.clear();textEditing=false;textPoint=null;
+  activePhotoIndex=0;textEditing=false;textPoint=null;
   draft={...record,photos:photosOf(record),stamp:normalizeStamp(record.stamp),export:normalizeExport(record.export),crop:normalizeCrop(record.crop),category:record.category || ''};saved=isSaved;dirty=!!recovery || !isSaved;revision=0;prepared=null;locationGeneration++;
   draftSession=new DraftSession(recovery);lastDraftRevision=recovery?0:-1;clearTimeout(draftTimer);
   addressController?.abort();addressLocks=new Set(isSaved || recovery?['area','block','street'].filter(key=>record.address[key]):[]);
@@ -529,8 +543,8 @@ async function closeNote() {
   finishCloseNote();
 }
 function finishCloseNote(){
-  locationGeneration++;addressController?.abort();exportGeneration++;clearTimeout(prepareTimer);resolvePrepare?.();
-  clearTimeout(draftTimer);draftSession=null;hidePhotoText();photoCache.clear();photoURLs.forEach(URL.revokeObjectURL);photoURLs=[];
+  locationGeneration++;addressController?.abort();cancelPhotoPreparation();
+  clearTimeout(draftTimer);draftSession=null;hidePhotoText();photoURLs.forEach(URL.revokeObjectURL);photoURLs=[];
   clearVideoPreview();
   $('note-dialog').close();draft=null;prepared=null;dirty=false;editor.clear();
   refreshDrafts().catch(report);
@@ -541,7 +555,6 @@ async function saveCurrent(event,next=false) {
   setBusy(true);let completed;
   try {
     do {
-      await readyImage();
       const record=readDraft();
       const savedRevision=revision;
       requirePersistence();clearTimeout(draftTimer);await draftSession.commit(record,saved);
@@ -567,19 +580,59 @@ function download(blob,name) {
   const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
-async function share(fileOnly=false,currentOnly=false) {
-  if(!prepared || !draft || busy) return;
-  const data={files:currentOnly?[prepared.file]:prepared.files},text=fileOnly?'':shareText(readDraft());if(text)data.text=text;
+function share(fileOnly=false,currentOnly=false) {
+  if(!draft || busy)return;
+  if(prepared)void shareFiles([prepared],fileOnly);
+  else if(draft.photos.length>1)void prepareExport(currentOnly,fileOnly,false);
+}
+async function prepareExport(currentOnly,fileOnly,downloadOnly){
+  const dialog=$('prepare-export-dialog'),status=$('prepare-export-status'),confirm=$('confirm-export');
+  const record=readDraft(),generation=exportGeneration,request=++exportRequest;
+  const indices=currentOnly?[activePhotoIndex]:record.photos.map((_,index)=>index);
+  const isOpen=()=>dialog.open && request===exportRequest;
+  const isCurrent=()=>isOpen() && draft?.id===record.id && generation===exportGeneration && !$('data-status-dialog').open;
+  status.textContent=`Preparing ${indices.length} ${indices.length===1?'file':'files'}…`;
+  confirm.hidden=true;
+  confirm.onclick=null;
+  $('prepare-export-title').textContent=downloadOnly?'Save file':'Share attachments';
+  dialog.showModal();
+  try{
+    const job=renderQueue.then(()=>prepareFiles(record,indices,isCurrent,count=>{
+      status.textContent=`Prepared ${count} of ${indices.length}`;
+    }));
+    renderQueue=job.catch(()=>{});
+    const files=await job;
+    if(!files || !isCurrent()){
+      if(isOpen())status.textContent='Note details changed. Close and try again.';
+      return;
+    }
+    status.textContent=`${files.length} ${files.length===1?'file':'files'} ready · ${(files.reduce((size,file)=>size+file.size,0)/1024/1024).toFixed(1)} MB`;
+    confirm.textContent=downloadOnly?'Save':'Share';
+    confirm.hidden=false;
+    confirm.onclick=()=>{
+      const current=isCurrent();
+      dialog.close();
+      if(!current){notify('Note details changed. Try exporting again.');return;}
+      if(downloadOnly)download(files[0],files[0].name);
+      else void shareFiles(files,fileOnly);
+    };
+  }catch(error){if(isCurrent())status.textContent=error.message;}
+}
+async function shareFiles(files,fileOnly) {
+  const data={files},text=fileOnly?'':shareText(readDraft());if(text)data.text=text;
   try {
-    if(!navigator.share || !navigator.canShare?.({files:data.files})) {if(data.files.length>1){showShareFiles(data);return;}download(prepared.blob,prepared.file.name);notify('File download is ready. Use Copy selected text to include the details.');return;}
-    // No await before share: iOS requires the button's transient user activation.
+    if(!navigator.share || !navigator.canShare?.({files})){
+      if(files.length>1){showShareFiles(data);return;}
+      download(files[0],files[0].name);notify('File download is ready. Use Copy selected text to include the details.');return;
+    }
+    // The prepared files are shared directly from the tap for iOS activation.
     const sharing=navigator.share(data);
     setBusy(true);
     await sharing;
     notify('Share sheet closed. Check the files and note in WhatsApp.');
-  } catch(error) {
-    if(error.name!=='AbortError') notify('Sharing failed. Try Photo only, then copy the note and map link.',true);
-  } finally {setBusy(false);}
+  }catch(error){
+    if(error.name!=='AbortError')notify('Sharing failed. Try sharing the current attachment, then copy the note and map link.',true);
+  }finally{setBusy(false);}
 }
 function selectTool(tool) {
   hidePhotoText();
@@ -635,17 +688,28 @@ function openPhraseEditor(item=null){
 }
 function openPhrasePicker(){
   if(!draft)return;
-  const category=$('category').value;$('phrase-picker-category').textContent=categories.label(category);$('phrase-choices').replaceChildren();
-  for(const phrase of phrases.list(category)){
-    const button=document.createElement('button');button.className='phrase-choice';button.dir='auto';button.textContent=phrase.text;
-    button.onclick=()=>{
-      const field=$('description'),before=field.value,after=before.trim()?`${before.trimEnd()}\n${phrase.text}`:phrase.text;
-      if(after.length>4000){notify('The note is full. Shorten it before adding a phrase.',true);return;}
-      field.value=after;markDirty();queuePrepare();$('phrase-picker-dialog').close();field.focus();
-    };
-    $('phrase-choices').append(button);
+  const choices=$('phrase-choices');
+  choices.replaceChildren();
+  for(const category of [{id:'',name:'Uncategorized'},...categories.list()]){
+    const entries=phrases.list(category.id);
+    if(!entries.length)continue;
+    const heading=document.createElement('h3');
+    heading.dir='auto';heading.textContent=category.name;choices.append(heading);
+    for(const phrase of entries){
+      const button=document.createElement('button');
+      button.className='phrase-choice';button.dir='auto';button.textContent=phrase.text;
+      button.onclick=()=>{
+        const field=$('description'),before=field.value.trimEnd(),after=before?`${before}\n${phrase.text}`:phrase.text;
+        if(after.length>4000){notify('The note is full. Shorten it before adding a phrase.',true);return;}
+        $('category').value=phrase.category;
+        field.value=after;markDirty();queuePrepare();$('phrase-picker-dialog').close();field.focus();
+      };
+      choices.append(button);
+    }
   }
-  if(!phrases.list(category).length){const p=document.createElement('p');p.className='field-help';p.textContent='Add phrases for this category in Settings → Quick phrases.';$('phrase-choices').append(p);}
+  if(!choices.childElementCount){
+    const empty=document.createElement('p');empty.className='field-help';empty.textContent='Add phrases in Settings → Quick phrases.';choices.append(empty);
+  }
   $('phrase-picker-dialog').showModal();
 }
 function showShareFiles(data){
@@ -761,6 +825,10 @@ $('remove-photo').onclick=()=>removeCurrentPhoto().catch(report);
 $('quick-phrases').onclick=openPhrasePicker;$('close-phrase-picker').onclick=()=>$('phrase-picker-dialog').close();
 $('phrase-category').onchange=renderPhraseSettings;$('phrase-add').onclick=()=>openPhraseEditor();$('cancel-phrase').onclick=()=>$('phrase-dialog').close();
 $('phrase-form').onsubmit=event=>{event.preventDefault();try{if(editingPhraseId)phrases.edit(editingPhraseId,$('phrase-text').value);else phrases.add($('phrase-category').value,$('phrase-text').value);renderPhraseSettings();$('phrase-dialog').close();$('settings-status').textContent='Phrases saved on this device';}catch(error){$('phrase-error').textContent=error.message;}};
+$('close-prepare-export').onclick=()=>$('prepare-export-dialog').close();
+$('prepare-export-dialog').onclose=()=>{
+  if(!$('prepare-export-dialog').open)$('confirm-export').onclick=null;
+};
 $('close-share-files').onclick=()=>$('share-files-dialog').close();
 $('resume-draft').onclick=()=>{const item=recoverableDrafts[0];if(item)openNote(item.record,item.saved,'Recovered draft',item).catch(report);};
 videoCapture=new HoldVideoCapture($('shutter'),{
@@ -884,7 +952,10 @@ $('apply-photo-settings').onclick=()=>{
   markDirty();queuePrepare();syncSettingsActions();$('settings-status').textContent='Applied to this note’s photos. Save the note to keep the change.';
 };
 $('refresh-location').onclick=locate;$('share-button').onclick=()=>share(!draft?.export.includeText);$('share-photo').onclick=()=>share(true,true);
-$('download-photo').onclick=()=>{if(prepared) download(prepared.blob,prepared.file.name);};
+$('download-photo').onclick=()=>{
+  if(prepared)download(prepared,prepared.name);
+  else if(draft?.photos.length>1)void prepareExport(true,true,true);
+};
 $('download-original').onclick=()=>{
   if(!draft)return;
   const extension=mediaExtension(currentPhoto().original);
@@ -921,7 +992,7 @@ $('delete-note').onclick=async()=>{
 };
 $('backup-note').onclick=async()=>{
   if(busy || !draft)return;setBusy(true);
-  try {await readyImage();await exportRecords([readDraft()]);}catch(error){report(error);}finally{setBusy(false);}
+  try {await exportRecords([readDraft()]);}catch(error){report(error);}finally{setBusy(false);}
 };
 async function backUpEverything(){
   if(busy)return;
