@@ -1,4 +1,4 @@
-# RASD — Field Notes 0.15
+# RASD — Field Notes 0.16
 
 A camera-first PWA for construction site observations. English interface with Arabic and mixed-language content. Static HTML/CSS/ES modules: no runtime libraries, accounts or backend for photos. The published URL is public; each device keeps its own local notes.
 
@@ -53,7 +53,7 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node tests/races.mjs
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node tests/quality.mjs
 ```
 
-Tests cover backup integrity, legacy notes, Arabic, project persistence, native file-input path, full 4032×3024 JPEG dimensions and a PNG pixel comparison for crop geometry, appended-strip dimensions, unchanged original bytes, stamp persistence, offline use, denied preview permission, storage-full handling and delayed GPS/decode races. Mobile/tablet/landscape layouts are checked in Chromium. Service worker cache: `rasd-shell-v17`; IndexedDB v5 preserves mixed media notes and blocks older photo-only writers.
+Tests cover backup integrity, legacy notes, Arabic, project persistence, native file-input path, full 4032×3024 JPEG dimensions and a PNG pixel comparison for crop geometry, appended-strip dimensions, unchanged original bytes, stamp persistence, offline use, denied preview permission, storage-full handling and delayed GPS/decode races. Mobile/tablet/landscape layouts are checked in Chromium. Service worker cache: `rasd-shell-v18`; IndexedDB v5 preserves mixed media notes and blocks older photo-only writers.
 
 Design reference: [Halide](https://halide.cam/), for camera-first composition and restrained controls. Latin UI uses the system font (SF Pro on iPhone); Arabic uses bundled IBM Plex Sans Arabic 400/500/600 with an Arabic unicode range. Font assets are precached and loaded before canvas measurement/export.
 
@@ -111,3 +111,5 @@ Safety and Site Cleanliness have the approved Arabic quick phrases; Site Works a
 
 
 0.15 prepares full-size files for multi-attachment notes only when the user asks to share or save an export. Saving a note or its draft persists the originals and edits without waiting for full-size encoding. The editor keeps a preview up to 1600 px on its longest side and uses the original for full-resolution export. Sequential encoding releases each full-resolution image before advancing. The share confirmation provides a fresh tap for the native share sheet. Quick phrases lists all groups with entries and applies the selected phrase’s category. PDF rendering uses its separate lossless path.
+
+0.16 refines weak location readings for up to eight seconds after the first fix. Pins with estimated accuracy over 50 m are available for review in the editor and excluded from outgoing map links until confirmed or edited. The chosen pin and manually edited address fields survive drafts, saves and backups. The main shutter uses a tap for the native photo picker. Holding records through the live camera when available. If live recording is unavailable, releasing opens the native video picker. Safari Website Settings control per-site Location, Camera and Microphone access. iOS manages permission grants for Home Screen apps.

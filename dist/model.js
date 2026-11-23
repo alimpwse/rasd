@@ -3,6 +3,7 @@ import {normalizeCategory,normalizeCategoryName,categoryLabel} from './categorie
 import {normalizeExport} from './preferences.js';
 import {normalizeCrop} from './framing.js';
 import {calendarDate,formatTime} from './datetime.js';
+import {validCoordinates,locationNeedsReview} from './location.js';
 export const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
 export const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 export const MAX_VIDEO_SECONDS = 60;
@@ -16,7 +17,6 @@ const mediaType = value => typeof value==='string' ? value.split(';',1)[0].trim(
 const text = (value, max) => typeof value === 'string' && value.length <= max;
 const finite = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
 const date = value => typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
-const validCoordinates = p => p && finite(p.latitude, -90, 90) && finite(p.longitude, -180, 180);
 const validId = value => text(value,80) && /^[a-zA-Z0-9_-]+$/.test(value);
 
 export const isVideo = asset => asset?.kind==='video' || mediaType(asset?.original?.type).startsWith('video/');
@@ -33,6 +33,10 @@ export function mapsURL(location) {
   return validCoordinates(location) ? `https://maps.google.com/?q=${encodeURIComponent(`${location.latitude},${location.longitude}`)}` : '';
 }
 
+export function shareableMapsURL(location) {
+  return locationNeedsReview(location)?'':mapsURL(location);
+}
+
 export function formatDate(value) {
   return `${calendarDate(value)} · ${formatTime(value)}`;
 }
@@ -43,7 +47,7 @@ export function shareText(record) {
   const when=[f.date&&calendarDate(record.createdAt),f.time&&formatTime(record.createdAt)].filter(Boolean).join(' · ');
   return [f.project&&record.project, f.category&&record.category&&`Category: ${categoryLabel(record.category,record.categoryName)}`,f.note&&record.description,when,
     f.area&&address.area&&`Area: ${address.area}`,f.block&&address.block&&`Block: ${address.block}`,
-    f.street&&address.street&&`Street: ${address.street}`,f.map&&mapsURL(location)].filter(Boolean).join('\n');
+    f.street&&address.street&&`Street: ${address.street}`,f.map&&shareableMapsURL(location)].filter(Boolean).join('\n');
 }
 
 export function validateRecord(record) {
@@ -54,6 +58,9 @@ export function validateRecord(record) {
   if (!a || !text(a.area,100) || !text(a.block,30) || !text(a.street,100)) invalid();
   const p = record.location;
   if (p !== null && (!validCoordinates(p) || !finite(p.accuracy,0,100000) || !date(p.timestamp))) invalid();
+  if (p?.pinSource!==undefined && !['manual','confirmed'].includes(p.pinSource))invalid();
+  const manual = record.manualAddressFields;
+  if (manual!==undefined && (!Array.isArray(manual) || manual.length>3 || manual.some(key=>!['area','block','street'].includes(key))))invalid();
   const sources=photosOf(record),ids=new Set();
   let bytes=0;
   if(!Array.isArray(sources) || !sources.length || sources.length>MAX_NOTE_PHOTOS)invalid();
@@ -93,7 +100,8 @@ export function validateRecord(record) {
   const category=normalizeCategory(record.category),categoryName=normalizeCategoryName(record.categoryName,category);
   return {id:record.id,createdAt:record.createdAt,project:record.project,description:record.description,
     address:{area:a.area,block:a.block,street:a.street},
-    location:p === null ? null : {latitude:p.latitude,longitude:p.longitude,accuracy:p.accuracy,timestamp:p.timestamp},
+    ...(manual===undefined?{}:{manualAddressFields:[...new Set(manual)]}),
+    location:p === null ? null : {latitude:p.latitude,longitude:p.longitude,accuracy:p.accuracy,timestamp:p.timestamp,...(p.pinSource?{pinSource:p.pinSource}:{})},
     photos,original,thumbnail,annotations,crop,stamp:normalizeStamp(record.stamp),
     category,categoryName,export:normalizeExport(record.export)};
 }

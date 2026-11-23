@@ -25,6 +25,7 @@ This is a buildless static application using HTML/CSS and native ES modules. The
 | `storage.js`, `drafts.js` | IndexedDB, atomic saved-note/draft operations, conflict detection |
 | `preferences.js`, `stamp.js`, `datetime.js`, `fonts.js` | Settings, printed information, Kuwait date/time and fonts |
 | `categories.js`, `phrases.js`, `projects.js` | Local editable catalogs and defaults |
+| `location.js` | GPS fixes, coordinate parsing and pin review rules |
 | `address.js` | Reverse-geocoding and local cache |
 | `backup.js` | Full backup validation, replacement and restore journal |
 | `report-ui.js`, `report.js`, `pdf.js` | Multi-note reports, rendering and PDF encoding |
@@ -56,9 +57,9 @@ Paths above without a prefix are in `dist/`. See `docs/TECHNICAL.md` for feature
 - Round context is session-only. Camera cancellation retains it; successful acquisition consumes it; End round/reload clears it. Failed saves, conflicting drafts and pending restores keep the current editor available.
 - PDF reports use saved versions: up to 20 notes / 50 attachments / 100 MiB. Videos appear as labeled still previews; the actual video file is shared separately. Full-resolution cropped photos are losslessly embedded; Arabic text is rasterized consistently, not selectable PDF text. Cancellation and stale-generation guards must stay intact.
 
-### Video capture and playback (0.14.0)
+### Video capture and playback
 
-`HoldVideoCapture` owns the shutter's pointer/click listeners. Short clicks preserve native picker user activation. A 400 ms hold clones the live preview video track and requests microphone access; release ends recording. Releasing during a permission prompt invalidates the request so it cannot start later. Recording auto-stops at 59.75 seconds for muxing margin; decode/validation still enforce an actual 60-second maximum. Native video capture and Library import are explicit fallbacks.
+`HoldVideoCapture` owns the shutter's pointer/click listeners. Short clicks preserve native picker user activation. A 400 ms hold clones the live preview video track and requests microphone access; release ends recording. Releasing during a permission prompt invalidates the request so it cannot start later. Recording auto-stops at 59.75 seconds for muxing margin; decode/validation still enforce an actual 60-second maximum. When live recording is unavailable, release of the held shutter launches the native video picker from the user gesture. The separate native button and Library import are accessible alternatives.
 
 Keep the held shutter enabled while disabling other navigation controls; temporarily disabling it can break pointer capture. Stop on hidden/pagehide/track end. Do not stop preview tracks owned by Camera when cleaning recorder clones. Do not clear a saved video player source on pagehide: a back/forward-cache return must still play it. Pause it instead.
 
@@ -66,7 +67,7 @@ Pointer cancellation discards the current recording only when its pointer ID mat
 
 MP4 is preferred if MediaRecorder supports it, with supported WebM fallback. Imported MP4/MOV/WebM must actually decode. MediaRecorder WebM may report Infinity until the browser seeks through the timeline; `inspectVideo` measures actual duration rather than inventing it. Enforce dimensions/size/time caps, timeout cleanly and release object URLs/tracks. Preserve the supplied/recorded video Blob; do not burn stamps or recompress it. Use an unparameterized video MIME for Web Share files while keeping bytes unchanged. Actual iPhone camera quality, codec support and WhatsApp delivery require device acceptance.
 
-## Current appearance and defaults (0.15.0)
+## Current appearance and defaults (0.16.0)
 
 New preferences use **Dark** and **Information strip**. Printed fields: location/date/time on; project/category/note off. Printed address: block/street on, area off. Coordinates remain stored but never print on the photo.
 
@@ -92,7 +93,7 @@ Phrase `defaultsVersion: 2` preserves intentional deletions across reload/backup
 
 ## Location and external services
 
-GPS is fresh per note, with manual address edits preserved against delayed responses. Photon/OpenStreetMap (`https://photon.komoot.io/reverse`) is the only runtime address lookup; coordinates are sent, photographs and note text are not. Automatic address can be disabled. Coverage is approximate, not authoritative PACI data: leave missing fields blank and never invent block/street values.
+GPS starts after capture. A weak first fix can be refined for up to eight seconds. Cancel collection on close, hide, restore or manual correction. Approximate pins over 50 m are excluded from outgoing links through `shareableMapsURL` until explicitly confirmed or replaced. The editor can show the raw pin for review. Preserve `pinSource` and `manualAddressFields` through validation, drafts and backups. Safari and iOS manage permission lifetimes. Manual address edits survive delayed responses. Photon/OpenStreetMap (`https://photon.komoot.io/reverse`) is the only runtime address lookup; coordinates are sent, photographs and note text are not. Automatic address can be disabled. Coverage is approximate, not authoritative PACI data: leave missing fields blank and never invent block/street values.
 
 Keep accuracy/distance checks, request throttling and cache behavior in `address.js`. Offline uses a matching cached address or manual fields. No background tracking. The Maps link uses `https://maps.google.com/?q=latitude,longitude`; there is no URL-shortener backend.
 
@@ -100,7 +101,7 @@ Keep accuracy/distance checks, request throttling and cache behavior in `address
 
 - `.github/workflows/pages.yml` publishes **only `dist`**, triggered on `main` or manually. Enable Settings → Pages → Source: GitHub Actions. No install/build or secret token is required for this workflow.
 - Keep asset/import URLs relative. Project sites may live at `/repository/`, not the domain root. Manifest `id`, `start_url`, `scope`, and service-worker registration use `./`.
-- Service worker shell cache is currently `rasd-shell-v17`. Cache the canonical directory URL `./`, not a redirected `/index.html`. Precache uses `redirect: 'error'`; returning a followed redirect for a navigation previously broke Safari.
+- Service worker shell cache is currently `rasd-shell-v18`. Cache the canonical directory URL `./`, not a redirected `/index.html`. Precache uses `redirect: 'error'`; returning a followed redirect for a navigation previously broke Safari.
 - On every shipped app-asset change, increment the shell cache version and update the app version in `package.json` and visible version strings in `index.html`. Add new required offline assets to `FILES` in `sw.js`. A docs-only change does not need an app version bump.
 - Keep explicit Update acceptance for normal upgrades. Do not unconditionally skip waiting, reload an unsaved editor or wipe user storage. The limited auto-recovery for historical caches v1/v2 is intentional.
 - Avoid hosting separate independent RASD copies under one `username.github.io` origin: IndexedDB/localStorage keys and cache names are shared by origin, even across different paths. Use one canonical installation per origin or intentionally design a migration/namespacing strategy.

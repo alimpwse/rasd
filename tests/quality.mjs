@@ -41,7 +41,14 @@ try {
  const input=Buffer.from(await page.evaluate(async()=>Array.from(new Uint8Array(await window.fixture.arrayBuffer()))));
  await page.locator('#add-project').click();await page.locator('#project-name').fill('مشروع A');await page.getByRole('button',{name:'Create project',exact:true}).click();
  await page.reload();assert.equal(await page.locator('#active-project').inputValue(),'مشروع A');
- const upload=async()=>{const waiting=page.waitForEvent('filechooser');await page.locator('#shutter').click();await(await waiting).setFiles({name:'original.png',mimeType:'image/png',buffer:input});await page.locator('#note-dialog').waitFor();};
+ const upload=async()=>{
+  const waiting=page.waitForEvent('filechooser');await page.locator('#shutter').click();
+  const chooser=await waiting;
+  // Chromium timestamps a synthetic fix when setGeolocation is called.
+  await context.setGeolocation({latitude:29.333,longitude:48.083,accuracy:8});
+  await chooser.setFiles({name:'original.png',mimeType:'image/png',buffer:input});
+  await page.locator('#note-dialog').waitFor();
+ };
  await upload();assert.equal(await page.locator('#project').inputValue(),'مشروع A');
  await page.locator('#tab-edit').click();await page.locator('#description').fill('معالجة فاصل التمدد — A-12');await page.locator('#area').fill('السالمية');await page.locator('#block').fill('5');
  await page.waitForFunction(()=>document.querySelector('#location-status').classList.contains('has-location'));

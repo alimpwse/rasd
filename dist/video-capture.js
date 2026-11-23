@@ -4,16 +4,25 @@ const MIME_TYPES=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/we
 const stopTracks=stream=>stream?.getTracks().forEach(track=>track.stop());
 
 export class HoldVideoCapture {
-  constructor(button,{getStream,canStart=()=>true,onPhoto,onVideo,onState=()=>{},onError=()=>{}}) {
-    Object.assign(this,{button,getStream,canStart,onPhoto,onVideo,onState,onError});
+  constructor(button,{getStream,canStart=()=>true,onPhoto,onVideo,onNativeVideo,onState=()=>{},onError=()=>{}}) {
+    Object.assign(this,{button,getStream,canStart,onPhoto,onVideo,onNativeVideo,onState,onError});
     this.status='idle';this.held=false;this.suppressClick=false;this.generation=0;this.listeners=[];this.session=null;this.destroyed=false;
     this.listen(button,'pointerdown',event=>{
       if(event.button!==0 || event.isPrimary===false || this.active || !this.canStart())return;
-      this.held=true;this.pointer=event.pointerId;this.suppressClick=false;
+      this.held=true;this.pointer=event.pointerId;this.suppressClick=false;this.nativePending=false;
       try{button.setPointerCapture(event.pointerId);}catch{}
       this.holdTimer=setTimeout(()=>{this.holdTimer=null;if(this.held){this.suppressClick=true;void this.begin();}},400);
     });
-    const release=event=>{if(this.held && event.pointerId===this.pointer)this.stop();};
+    const release=event=>{
+      if(!this.held || event.pointerId!==this.pointer)return;
+      if(this.status==='native'){
+        this.releaseHold();
+        this.state('idle');
+        // Launch from the release gesture, or the following click if it grants activation.
+        if(navigator.userActivation?.isActive!==false && this.canStart())this.onNativeVideo();
+        else this.nativePending=true;
+      }else this.stop();
+    };
     const cancelled=event=>{if(this.held && event.pointerId===this.pointer)this.cancel();};
     const interrupted=()=>{if(this.active){this.suppressClick=true;this.stop();}};
     this.listen(button,'pointerup',release);this.listen(window,'pointerup',release);
@@ -21,6 +30,12 @@ export class HoldVideoCapture {
     this.listen(button,'lostpointercapture',interrupted);
     this.listen(button,'contextmenu',event=>{if(this.held||this.suppressClick)event.preventDefault();});
     this.listen(button,'click',event=>{
+      if(this.nativePending){
+        this.nativePending=false;this.suppressClick=false;
+        event.preventDefault();event.stopImmediatePropagation();
+        if(this.canStart())this.onNativeVideo();
+        return;
+      }
       if(this.suppressClick||this.active){event.preventDefault();event.stopImmediatePropagation();this.suppressClick=false;return;}
       if(this.canStart())this.onPhoto();
     });
@@ -40,12 +55,16 @@ export class HoldVideoCapture {
     else if(session.video){session.video.stop();session.video=null;}
   }
   async begin(){
+    const mimeType=typeof MediaRecorder==='function' && typeof MediaRecorder.isTypeSupported==='function' && MIME_TYPES.find(type=>MediaRecorder.isTypeSupported(type));
+    const source=this.getStream()?.getVideoTracks().find(track=>track.readyState==='live');
+    if((!mimeType || !navigator.mediaDevices?.getUserMedia || !source) && this.onNativeVideo){
+      this.state('native');
+      return;
+    }
     const generation=++this.generation,session={generation,chunks:[],bytes:0,off:[]};this.session=session;this.state('requesting');
     const listen=(target,event,handler)=>{target.addEventListener(event,handler);session.off.push(()=>target.removeEventListener(event,handler));};
     try {
-      const mimeType=typeof MediaRecorder==='function' && typeof MediaRecorder.isTypeSupported==='function' && MIME_TYPES.find(type=>MediaRecorder.isTypeSupported(type));
       if(!mimeType || !navigator.mediaDevices?.getUserMedia)throw new Error('Hold to record is unavailable. Use Record video instead.');
-      const source=this.getStream()?.getVideoTracks().find(track=>track.readyState==='live');
       if(!source)throw new Error('Start the live camera preview first, or use Record video.');
       session.video=source.clone();
       for(const track of [source,session.video])listen(track,'ended',()=>this.stop());
@@ -75,7 +94,7 @@ export class HoldVideoCapture {
   }
   stop(){
     this.releaseHold();
-    if(this.status==='requesting'){this.cancel();return;}
+    if(this.status==='requesting' || this.status==='native'){this.cancel();return;}
     if(this.status!=='recording')return;
     const session=this.session;this.state('finishing',this.elapsed());clearInterval(session.ticker);clearTimeout(session.limit);
     session.stopTimeout=setTimeout(()=>this.fail(new Error('The recording could not finish. Please try again.'),session),10000);
@@ -94,6 +113,7 @@ export class HoldVideoCapture {
   }
   fail(error,session){if(session.generation!==this.generation)return;this.cancel();this.onError(error instanceof Error?error:new Error('Recording failed. Please try again.'));}
   cancel(){
+    this.nativePending=false;
     if(this.active)this.suppressClick=true;
     this.generation++;this.releaseHold();const session=this.session;this.session=null;
     this.cleanup(session);

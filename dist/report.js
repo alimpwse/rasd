@@ -1,5 +1,5 @@
 import {PhotoEditor} from './editor.js';
-import {photosOf,validateRecord,mapsURL,formatDate,isVideo} from './model.js';
+import {photosOf,validateRecord,shareableMapsURL,formatDate,isVideo} from './model.js';
 import {categoryLabel} from './categories.js';
 import {PHOTO_FONT,ensurePhotoFonts} from './fonts.js';
 import {textDirection} from './stamp.js';
@@ -63,7 +63,7 @@ function heading(ctx,record,options,noteIndex,photoIndex,photoCount,continued=fa
   if(options.includeLocation){
     const address=record.address;
     for(const [label,value] of [['Area',address.area],['Block',address.block],['Street',address.street]])if(value)y=wrapped(ctx,`${label}: ${value}`,y,{size:10,lineHeight:16,color:MUTED});
-    const url=mapsURL(record.location);
+    const url=shareableMapsURL(record.location);
     if(url){text(ctx,{text:'Open location in Google Maps',direction:'ltr'},MARGIN,y,10,500,'#245d75');links.push({url,rect:{x:MARGIN,y,width:180,height:16}});y+=19;}
   }
   return {y:y+15,links};

@@ -16,6 +16,7 @@ import {Preferences,normalizeExport,MESSAGE_FIELDS} from './preferences.js';
 import {normalizeCrop} from './framing.js';
 import {Categories,categoryLabel} from './categories.js';
 import {AddressLookup} from './address.js';
+import {collectLocation,locationNeedsReview,parseCoordinates} from './location.js';
 
 const $=id=>document.getElementById(id);
 let activeScreen='camera', draft=null, dirty=false, saved=false, notes=[], thumbnails=[];
@@ -24,7 +25,7 @@ let busy=false,picking=false,loadingPhoto=false,openingNote=false,revision=0,off
 let draftSession=null,draftTimer,lastDraftRevision=-1,recoverableDrafts=[],draftThumbnails=[],draftListGeneration=0;
 let activePhotoIndex=0,photoURLs=[],renderQueue=Promise.resolve(),textEditing=false,textPoint=null,editingPhraseId='';
 let nextCapture=null;
-let videoCapture=null,videoState='idle',videoURLs=[];
+let videoCapture=null,videoState='idle',videoURLs=[],microphoneDenied=false;
 const fields=['description','project','area','block','street','category'];
 // Finish any interrupted full restore before reading preferences or starting capture.
 let storageStartupError;
@@ -40,14 +41,14 @@ const categories=new Categories(sessionStorageOnly);
 const phrases=new Phrases(sessionStorageOnly);
 let editingCategoryId='';
 const preferences=new Preferences(sessionStorageOnly),addressLookup=new AddressLookup();
-let addressController,addressLocks=new Set();
+let gpsController,addressController,addressLocks=new Set();
 let projectTarget='active-project';
 let editorView='edit',libraryActionNote=null,selectedAnnotationIndex=-1;
 const camera=new Camera($('camera-video'),(state,message)=>{
   $('camera-placeholder').hidden=state==='live';
   $('camera-message').textContent=message;
   syncAcquisitionControls();
-  $('restart-camera').textContent=state==='starting'?'Starting…':'Restart preview';
+  $('restart-camera').textContent=state==='starting'?'Starting…':state==='playback'?'Start preview':'Retry preview';
   $('restart-camera').disabled=state==='starting';
   $('viewfinder').classList.toggle('is-live',state==='live');
 });
@@ -72,6 +73,7 @@ function closeDataStatus(){
 window.addEventListener('storage',event=>{
   if(event.key==='rasd-restore-revision'){
     videoCapture?.cancel();
+    gpsController?.abort();addressController?.abort();
     nextCapture=null;syncNextCapture();
     reports.close();camera.stop();showDataStatus('Backup restored in another window','Reload RASD to use the restored notes and settings. Any unsaved edits in this window are not in the restored backup.',true);
   }
@@ -81,8 +83,8 @@ function syncAcquisitionControls() {
   $('active-project').disabled=loadingPhoto || openingNote || videoState!=='idle';
   $('shutter').disabled=loadingPhoto || openingNote || videoState==='finishing';
 }
-function resumeCamera() {
-  if(!document.hidden && activeScreen==='camera' && videoState==='idle' && !loadingPhoto && !openingNote && !picking && !document.querySelector('dialog[open]')) camera.start();
+function resumeCamera(retry=false) {
+  if(!document.hidden && activeScreen==='camera' && videoState==='idle' && !loadingPhoto && !openingNote && !picking && !document.querySelector('dialog[open]')) camera.start({retry:retry===true});
 }
 
 function notify(message,error=false) {
@@ -165,7 +167,7 @@ function readDraft() {
   const photos=draft.photos.map((photo,index)=>({...photo,crop:{...photo.crop},annotations:index===activePhotoIndex && !isVideo(photo)?editor.committedAnnotations():structuredClone(photo.annotations)}));
   return {...draft,description:$('description').value.trim(),project:$('project').value.trim(),
     address:{area:$('area').value.trim(),block:$('block').value.trim(),street:$('street').value.trim()},
-    photos,original:photos[0].original,thumbnail:photos[0].thumbnail,annotations:photos[0].annotations,crop:photos[0].crop,category:$('category').value,
+    photos,original:photos[0].original,thumbnail:photos[0].thumbnail,annotations:photos[0].annotations,crop:photos[0].crop,category:$('category').value,manualAddressFields:[...addressLocks],
     categoryName:$('category').value?categories.label($('category').value):''};
 }
 function currentPhoto(){return draft?.photos[activePhotoIndex];}
@@ -370,7 +372,7 @@ function setBusy(value) {
   for(const el of $('note-dialog').querySelectorAll('button,input,textarea,select')) el.disabled=value;
   $('edit-canvas').style.pointerEvents=value?'none':'';
   for(const button of document.querySelectorAll('[data-photo-action]'))button.disabled=value || !draft;
-  if(!value){setShareButtons();if(draft){$('add-photo').disabled=draft.photos.length>=MAX_NOTE_PHOTOS;}if(dirty && revision!==lastDraftRevision)scheduleDraft();}
+  if(!value){setShareButtons();if(draft){$('add-photo').disabled=draft.photos.length>=MAX_NOTE_PHOTOS;syncLocationControls();}if(dirty && revision!==lastDraftRevision)scheduleDraft();}
 }
 function setShareButtons() {
   const disabled=busy || !draft || (!prepared && draft.photos.length===1);
@@ -430,16 +432,32 @@ function queuePrepare() {
 }
 function showLocation(message) {
   const location=draft?.location;
-  $('location-status').classList.toggle('has-location',!!location);
-  $('location-status').textContent=message || (location ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)} · accuracy ±${Math.round(location.accuracy)} m`:'No GPS location saved for this note.');
+  const review=locationNeedsReview(location);
+  $('location-status').classList.toggle('has-location',!!location && !review);
+  $('location-status').classList.toggle('needs-review',review);
+  $('location-status').textContent=message || (review?`Approximate location (±${Math.round(location.accuracy)} m). Check the pin before sharing.`:
+    location?.pinSource==='manual'?'Pin set manually.':
+    location?.pinSource==='confirmed'?'Pin confirmed.':
+    location?`GPS accuracy ±${Math.round(location.accuracy)} m`:'No location saved for this note.');
   $('map-link').hidden=!location;$('map-link').href=mapsURL(location) || '#';
+  syncLocationControls();
+}
+function syncLocationControls(){
+  $('refresh-location').disabled=busy || !!gpsController;
+  $('confirm-location').hidden=!locationNeedsReview(draft?.location);
+  $('confirm-location').disabled=busy || !!gpsController;
 }
 async function lookupAddress() {
   addressController?.abort();
   if(!draft?.location)return;
+  if(locationNeedsReview(draft.location)){
+    $('address-status').textContent='Confirm or edit the pin to look up the address.';
+    return;
+  }
   if(!preferences.snapshot().autoAddress){$('address-status').textContent='Automatic address is off. Enter the address manually.';return;}
   const controller=new AbortController();addressController=controller;
   const id=draft.id,generation=locationGeneration,point={...draft.location};
+  if(point.pinSource)point.accuracy=0;
   $('address-status').textContent='Looking up area, block and street… You can keep editing.';
   try {
     const address=await addressLookup.lookup(point,{signal:controller.signal});
@@ -456,25 +474,43 @@ async function lookupAddress() {
     $('address-status').textContent=error.message;
   }
 }
-function locate() {
-  if(!draft || !navigator.geolocation) {showLocation('Location unavailable. Enter the address manually.');return;}
+function useLocation(point){
+  gpsController?.abort();gpsController=null;locationGeneration++;
+  draft.location=point;
+  for(const key of ['area','block','street'])if(!addressLocks.has(key))$(key).value='';
+  showLocation();markDirty();queuePrepare();
+  if(!point.pinSource)$('camera-location').textContent=`Last GPS accuracy ±${Math.round(point.accuracy)} m`;
+  void lookupAddress();
+}
+async function locate() {
+  if(!draft || busy || gpsController)return;
+  if(!navigator.geolocation){showLocation('Location unavailable. Enter the address manually.');return;}
   const id=draft.id,generation=++locationGeneration;
+  const controller=new AbortController();gpsController=controller;
   addressController?.abort();$('address-status').textContent='Address will follow GPS. Manual fields stay editable.';
-  $('refresh-location').disabled=true;showLocation('Finding your location… You can keep editing.');
-  navigator.geolocation.getCurrentPosition(position=>{
-    if(!draft || draft.id!==id || generation!==locationGeneration) return;
-    draft.location={latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy,timestamp:new Date(position.timestamp).toISOString()};
-    for(const key of ['area','block','street'])if(!addressLocks.has(key))$(key).value='';
-    $('refresh-location').disabled=busy;showLocation();markDirty();queuePrepare();
-    $('camera-location').textContent=`Last GPS accuracy ±${Math.round(position.coords.accuracy)} m`;
-    lookupAddress();
-  },error=>{
-    if(!draft || draft.id!==id || generation!==locationGeneration) return;
-    $('refresh-location').disabled=busy;
-    const message=error.code===1?'Location permission denied. Enable it in site settings or enter the address.':'No accurate location yet. Try again outdoors.';
-    showLocation(draft.location?`${message} Your previously saved location is unchanged.`:message);
-    $('address-status').textContent='Enter the address manually, or retry GPS.';
-  },{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+  showLocation('Finding your location… You can keep editing.');
+  const current=()=>!controller.signal.aborted && draft?.id===id && generation===locationGeneration && !$('data-status-dialog').open;
+  try {
+    const point=await collectLocation(navigator.geolocation,{signal:controller.signal,onRefine:()=>{
+      if(current())showLocation('Improving GPS accuracy… You can keep editing.');
+    }});
+    if(!current())return;
+    gpsController=null;
+    if(locationNeedsReview(point) && draft.location && !locationNeedsReview(draft.location)){
+      showLocation('New GPS reading was approximate. The existing pin was kept.');
+      $('address-status').textContent='Retry on site, or edit the pin.';
+      return;
+    }
+    useLocation(point);
+  }catch(error){
+    if(!current())return;
+    gpsController=null;
+    const message=error.code===1?'Location permission denied. Allow Location in site settings, or edit the pin.':'No accurate location yet. Try again outdoors.';
+    showLocation(draft.location?`${message} The existing pin was kept.`:message);
+    $('address-status').textContent='Enter an address manually or edit the pin.';
+  }finally{
+    if(gpsController===controller){gpsController=null;if(draft?.id===id)showLocation();}
+  }
 }
 async function openNote(record,isSaved,mode='',recovery=null) {
   if(openingNote || draft || $('data-status-dialog').open) return;
@@ -497,7 +533,8 @@ async function openNote(record,isSaved,mode='',recovery=null) {
   activePhotoIndex=0;textEditing=false;textPoint=null;
   draft={...record,photos:photosOf(record),stamp:normalizeStamp(record.stamp),export:normalizeExport(record.export),crop:normalizeCrop(record.crop),category:record.category || ''};saved=isSaved;dirty=!!recovery || !isSaved;revision=0;prepared=null;locationGeneration++;
   draftSession=new DraftSession(recovery);lastDraftRevision=recovery?0:-1;clearTimeout(draftTimer);
-  addressController?.abort();addressLocks=new Set(isSaved || recovery?['area','block','street'].filter(key=>record.address[key]):[]);
+  addressController?.abort();
+  addressLocks=new Set(record.manualAddressFields ?? (isSaved || recovery?['area','block','street'].filter(key=>record.address[key]):[]));
   $('note-dialog').querySelector('.inline-notice')?.remove();
   $('description').value=record.description;
   $('category').value=draft.category;
@@ -543,7 +580,7 @@ async function closeNote() {
   finishCloseNote();
 }
 function finishCloseNote(){
-  locationGeneration++;addressController?.abort();cancelPhotoPreparation();
+  locationGeneration++;gpsController?.abort();gpsController=null;addressController?.abort();cancelPhotoPreparation();
   clearTimeout(draftTimer);draftSession=null;hidePhotoText();photoURLs.forEach(URL.revokeObjectURL);photoURLs=[];
   clearVideoPreview();
   $('note-dialog').close();draft=null;prepared=null;dirty=false;editor.clear();
@@ -816,7 +853,7 @@ async function exportRecords(records) {
   notify('Save the backup to Files or iCloud Drive.');
 }
 
-$('restart-camera').onclick=()=>{picking=false;resumeCamera();};
+$('restart-camera').onclick=()=>{picking=false;microphoneDenied=false;resumeCamera(true);};
 $('add-photo').onclick=()=>{if(draft && !busy)$('add-photos-dialog').showModal();};
 $('close-add-photos').onclick=()=>$('add-photos-dialog').close();
 for(const [button,input] of [['add-from-camera','add-photo-camera'],['add-from-video','add-video-camera'],['add-from-library','add-photo-library']])$(button).onclick=()=>{$('add-photos-dialog').close();$(input).value='';$(input).click();};
@@ -832,23 +869,30 @@ $('prepare-export-dialog').onclose=()=>{
 $('close-share-files').onclick=()=>$('share-files-dialog').close();
 $('resume-draft').onclick=()=>{const item=recoverableDrafts[0];if(item)openNote(item.record,item.saved,'Recovered draft',item).catch(report);};
 videoCapture=new HoldVideoCapture($('shutter'),{
-  getStream:()=>camera.stream,
+  getStream:()=>camera.live && !microphoneDenied?camera.stream:null,
   canStart:()=>!loadingPhoto && !openingNote && !picking && !draft && activeScreen==='camera' && !document.hidden && !document.querySelector('dialog[open]'),
   onPhoto:()=>pickPhoto('native-input'),
+  onNativeVideo:()=>pickPhoto('native-video-input'),
   onVideo:async blob=>{
     if($('data-status-dialog').open)return;
     loadingPhoto=true;syncAcquisitionControls();
     try{await newPhoto(blob,'Recorded video');}finally{loadingPhoto=false;syncAcquisitionControls();}
   },
   onState:({status,elapsed})=>{
+    const openingNativeVideo=videoState==='native';
     videoState=status;$('shutter').classList.toggle('is-recording',status==='recording');
     $('recording-status').hidden=status==='idle';
-    $('recording-status').textContent=status==='requesting'?'Allow microphone to record':status==='finishing'?'Preparing video…':`REC ${Math.floor((elapsed || 0)/60)}:${String(Math.floor((elapsed || 0)%60)).padStart(2,'0')}`;
-    if(status==='idle'){syncNextCapture();if(!draft && !camera.stream)resumeCamera();}
+    $('recording-status').textContent=status==='native'?'Release to open phone video':status==='requesting'?'Allow microphone to record':status==='finishing'?'Preparing video…':`REC ${Math.floor((elapsed || 0)/60)}:${String(Math.floor((elapsed || 0)%60)).padStart(2,'0')}`;
+    if(status==='idle'){syncNextCapture();if(!openingNativeVideo && !draft && !camera.stream)resumeCamera();}
     else $('shutter-label').textContent=status==='recording'?'RELEASE TO STOP':'VIDEO';
     syncAcquisitionControls();
   },
-  onError:report
+  onError:error=>{
+    if(error.name==='NotAllowedError' || error.name==='SecurityError'){
+      microphoneDenied=true;
+      notify('Microphone access is blocked. Hold the shutter again to open the phone video camera.',true);
+    }else report(error);
+  }
 });
 $('record-video').onclick=()=>pickPhoto('native-video-input');
 $('end-round').onclick=()=>{nextCapture=null;syncNextCapture();refreshProjects();};
@@ -901,7 +945,7 @@ function revealFocusedField() {
 }
 $('note-dialog').addEventListener('focusin',revealFocusedField);
 window.addEventListener('resize',revealFocusedField);window.visualViewport?.addEventListener('resize',revealFocusedField);
-for(const key of ['area','block','street'])$(key).addEventListener('input',()=>addressLocks.add(key));
+for(const key of ['area','block','street'])$(key).addEventListener('input',()=>addressLocks.add(key),{capture:true});
 $('project').addEventListener('change',()=>selectProject($('project').value));
 $('active-project').onchange=()=>selectProject($('active-project').value);
 $('add-project').onclick=()=>openProject('active-project');$('add-note-project').onclick=()=>openProject('project');
@@ -952,6 +996,29 @@ $('apply-photo-settings').onclick=()=>{
   markDirty();queuePrepare();syncSettingsActions();$('settings-status').textContent='Applied to this note’s photos. Save the note to keep the change.';
 };
 $('refresh-location').onclick=locate;$('share-button').onclick=()=>share(!draft?.export.includeText);$('share-photo').onclick=()=>share(true,true);
+$('edit-location').onclick=()=>{
+  if(!draft || busy)return;
+  const point=draft.location;
+  $('pin-coordinates').value=point?`${point.latitude.toFixed(6)}, ${point.longitude.toFixed(6)}`:'';
+  $('pin-error').textContent='';
+  $('pin-dialog').showModal();
+};
+$('close-pin').onclick=()=>$('pin-dialog').close();
+$('pin-form').onsubmit=event=>{
+  event.preventDefault();
+  if(!draft || busy || $('data-status-dialog').open)return;
+  try{
+    const point=parseCoordinates($('pin-coordinates').value);
+    $('pin-dialog').close();
+    useLocation({...point,accuracy:0,timestamp:new Date().toISOString(),pinSource:'manual'});
+  }catch(error){$('pin-error').textContent=error.message;}
+};
+$('confirm-location').onclick=async()=>{
+  const point=draft?.location;
+  if(!locationNeedsReview(point) || busy || gpsController)return;
+  if(await confirmAction('Use this pin?','Confirm only if this pin marks the observation site.','Use pin') &&
+     draft?.location===point && !$('data-status-dialog').open)useLocation({...point,pinSource:'confirmed'});
+};
 $('download-photo').onclick=()=>{
   if(prepared)download(prepared,prepared.name);
   else if(draft?.photos.length>1)void prepareExport(true,true,true);
@@ -1043,10 +1110,10 @@ $('restore-input').onchange=async event=>{
 $('help-button').onclick=()=>{reports.invalidateSetup();$('help-dialog').showModal();camera.stop();};
 $('close-help').onclick=()=>$('help-dialog').close();$('help-dialog').onclose=resumeCamera;
 document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){videoCapture?.stop();camera.stop();if(!busy)flushDraft().catch(()=>{});}
+  if(document.hidden){gpsController?.abort();videoCapture?.stop();camera.stop();if(!busy)flushDraft().catch(()=>{});}
   else resumeCamera();
 });
-window.addEventListener('pagehide',()=>{videoCapture?.stop();camera.stop();$('note-video').pause();if(!busy)flushDraft().catch(()=>{});});
+window.addEventListener('pagehide',()=>{gpsController?.abort();videoCapture?.stop();camera.stop();$('note-video').pause();if(!busy)flushDraft().catch(()=>{});});
 window.addEventListener('pageshow',event=>{if(event.persisted)resumeCamera();});
 window.addEventListener('beforeunload',event=>{if(dirty && revision!==lastDraftRevision){event.preventDefault();event.returnValue='';}});
 function connection() {$('connection').textContent=navigator.onLine?(offlineReady?'Offline ready':'On device'):'Offline';}

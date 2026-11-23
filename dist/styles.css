@@ -170,3 +170,9 @@
 .photo-thumbnail span{max-width:100%;white-space:nowrap}
 
 .phrase-choices h3{margin:12px 0 2px;font-size:14px;color:var(--steel)}
+
+.pin-actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px}
+.pin-actions .button{min-height:44px}
+.pin-actions a{font-size:.875rem}
+
+.location-status.needs-review{color:var(--accent)}
